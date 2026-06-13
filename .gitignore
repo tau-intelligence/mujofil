@@ -21,3 +21,5 @@ third_party/filament-src/
 spikes/filament_vk_export/build/
 spikes/dlpack_torch/*.so
 spikes/dlpack_torch/include/
+native/*.so
+test_5a.py
