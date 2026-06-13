@@ -40,12 +40,13 @@ target_link_libraries(filament_vk_export PRIVATE
 target_compile_options(filament_vk_export PRIVATE -stdlib=libc++)
 target_link_options(filament_vk_export PRIVATE -stdlib=libc++)
 
-# ---- Milestone 3a: Filament renders into our exportable swapchain ----------
+# ---- Milestone 3a/3b: Filament renders into our exportable swapchain -> CUDA -
 add_executable(render_export render_export.cpp)
-target_include_directories(render_export PRIVATE ${SRC_INC} ${FIL_INC})
-target_link_directories(render_export PRIVATE ${FIL_LIB})
+target_include_directories(render_export PRIVATE ${SRC_INC} ${FIL_INC} /usr/include)
+target_link_directories(render_export PRIVATE ${FIL_LIB} /usr/lib/x86_64-linux-gnu)
 target_link_libraries(render_export PRIVATE
     ${FIL_LIBS}
+    cudart
     Threads::Threads dl
     c++ c++abi)
 target_compile_options(render_export PRIVATE -stdlib=libc++)

@@ -22,7 +22,10 @@
 #include <backend/platforms/VulkanPlatform.h>
 #include <utils/EntityManager.h>
 
+#include <cuda_runtime.h>
+
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -289,36 +292,47 @@ int main() {
     printf("Filament rendered one frame (clear=%.2f,%.2f,%.2f).\n",
            CLEAR.x, CLEAR.y, CLEAR.z);
 
-    // ----- blit the rendered image to a host buffer to verify ---------------
+    // ----- GPU-copy the rendered image into an EXPORTABLE buffer, then let
+    //       CUDA read it (the real zero-copy consumer path) -------------------
     // Filament rendered into colors[lastAcquired-1] (acquire incremented after).
     uint32_t idx = (platform.lastAcquired + SC_SIZE - 1) % SC_SIZE;
     VkImage rendered = platform.sc->bundle.colors[idx];
 
     VkDeviceSize bytes = (VkDeviceSize)W * H * 4;
-    VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-    bci.size = bytes; bci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-    bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    VkBuffer hostBuf; VK_OK(vkCreateBuffer(device, &bci, nullptr, &hostBuf));
-    VkMemoryRequirements breq; vkGetBufferMemoryRequirements(device, hostBuf, &breq);
-    uint32_t hmt = pickMemType(phys, breq.memoryTypeBits,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    VkMemoryAllocateInfo bai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-    bai.allocationSize = breq.size; bai.memoryTypeIndex = hmt;
-    VkDeviceMemory hostMem; VK_OK(vkAllocateMemory(device, &bai, nullptr, &hostMem));
-    VK_OK(vkBindBufferMemory(device, hostBuf, hostMem, 0));
 
+    // exportable device-local buffer (CUDA will import its FD)
+    VkExternalMemoryBufferCreateInfo extBuf{
+        VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO};
+    extBuf.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+    VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bci.pNext = &extBuf;
+    bci.size = bytes;
+    bci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VkBuffer expBuf; VK_OK(vkCreateBuffer(device, &bci, nullptr, &expBuf));
+    VkMemoryRequirements breq; vkGetBufferMemoryRequirements(device, expBuf, &breq);
+    uint32_t emt = pickMemType(phys, breq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    VkMemoryDedicatedAllocateInfo bded{VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO};
+    bded.buffer = expBuf;
+    VkExportMemoryAllocateInfo bexp{VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO};
+    bexp.pNext = &bded;
+    bexp.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+    VkMemoryAllocateInfo bai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    bai.pNext = &bexp; bai.allocationSize = breq.size; bai.memoryTypeIndex = emt;
+    VkDeviceMemory expMem; VK_OK(vkAllocateMemory(device, &bai, nullptr, &expMem));
+    VK_OK(vkBindBufferMemory(device, expBuf, expMem, 0));
+
+    // record: transition rendered image PRESENT_SRC -> TRANSFER_SRC, copy -> buf
     VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     pci.queueFamilyIndex = qfi;
     VkCommandPool pool; VK_OK(vkCreateCommandPool(device, &pci, nullptr, &pool));
     VkCommandBufferAllocateInfo cai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
     cai.commandPool = pool; cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; cai.commandBufferCount = 1;
     VkCommandBuffer cmd; VK_OK(vkAllocateCommandBuffers(device, &cai, &cmd));
-
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     VK_OK(vkBeginCommandBuffer(cmd, &bi));
 
-    // transition rendered image PRESENT_SRC -> TRANSFER_SRC (preserve contents)
     VkImageMemoryBarrier toSrc{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
     toSrc.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
     toSrc.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
@@ -335,33 +349,63 @@ int main() {
     region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     region.imageExtent = {W, H, 1};
     vkCmdCopyImageToBuffer(cmd, rendered, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                           hostBuf, 1, &region);
+                           expBuf, 1, &region);
     VK_OK(vkEndCommandBuffer(cmd));
-
     VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     si.commandBufferCount = 1; si.pCommandBuffers = &cmd;
     VK_OK(vkQueueSubmit(myQueue, 1, &si, VK_NULL_HANDLE));
-    VK_OK(vkQueueWaitIdle(myQueue));
+    VK_OK(vkQueueWaitIdle(myQueue));   // (real path: VK->CUDA semaphore)
 
-    uint8_t* px = nullptr;
-    VK_OK(vkMapMemory(device, hostMem, 0, bytes, 0, (void**)&px));
-    // sample the center pixel
+    // export the buffer memory FD
+    auto pfnGetMemoryFd =
+        (PFN_vkGetMemoryFdKHR)vkGetDeviceProcAddr(device, "vkGetMemoryFdKHR");
+    VkMemoryGetFdInfoKHR gfd{VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR};
+    gfd.memory = expMem; gfd.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+    int fd = -1; VK_OK(pfnGetMemoryFd(device, &gfd, &fd));
+    printf("Exported rendered-pixels buffer as FD %d (%llu bytes)\n",
+           fd, (unsigned long long)breq.size);
+
+    // CUDA imports the SAME memory and reads it (no CPU bounce from Filament)
+    cudaExternalMemory_t cuExt;
+    cudaExternalMemoryHandleDesc hd{};
+    hd.type = cudaExternalMemoryHandleTypeOpaqueFd;
+    hd.handle.fd = fd;
+    hd.size = breq.size;
+    hd.flags = cudaExternalMemoryDedicated;
+    if (cudaImportExternalMemory(&cuExt, &hd) != cudaSuccess) {
+        fprintf(stderr, "cudaImportExternalMemory failed\n"); return 1;
+    }
+    void* dptr = nullptr;
+    cudaExternalMemoryBufferDesc bd{};
+    bd.offset = 0; bd.size = bytes; bd.flags = 0;
+    if (cudaExternalMemoryGetMappedBuffer(&dptr, cuExt, &bd) != cudaSuccess) {
+        fprintf(stderr, "cudaExternalMemoryGetMappedBuffer failed\n"); return 1;
+    }
+    printf("CUDA mapped Filament's rendered pixels at device ptr %p\n", dptr);
+
+    // verify via CUDA (in production: torch.from_dlpack on dptr instead)
+    std::vector<uint8_t> host(bytes);
+    cudaMemcpy(host.data(), dptr, bytes, cudaMemcpyDeviceToHost);
+    cudaDeviceSynchronize();
     uint32_t cx = W / 2, cy = H / 2;
-    uint8_t* p = px + (cy * W + cx) * 4;
+    uint8_t* p = host.data() + (cy * W + cx) * 4;
     uint8_t er = (uint8_t)(CLEAR.x * 255 + 0.5f);
     uint8_t eg = (uint8_t)(CLEAR.y * 255 + 0.5f);
     uint8_t eb = (uint8_t)(CLEAR.z * 255 + 0.5f);
-    printf("center pixel = (%u,%u,%u,%u), expected ~(%u,%u,%u)\n",
+    printf("CUDA-read center pixel = (%u,%u,%u,%u), expected ~(%u,%u,%u)\n",
            p[0], p[1], p[2], p[3], er, eg, eb);
     int dr = abs((int)p[0] - er), dg = abs((int)p[1] - eg), db = abs((int)p[2] - eb);
     bool ok = dr <= 4 && dg <= 4 && db <= 4;
-    vkUnmapMemory(device, hostMem);
+
+    cudaFree(dptr);
+    cudaDestroyExternalMemory(cuExt);
 
     if (ok) {
-        printf("\nRENDER-INTO-EXPORTABLE OK: Filament rendered the clear color "
-               "into our exportable image. (3b: route this image to CUDA.)\n");
+        printf("\nFULL ZERO-COPY CHAIN OK: Filament(Vulkan) -> exportable buffer "
+               "-> CUDA, no CPU round-trip. The CUDA pointer is ready to wrap as "
+               "a torch tensor (torch.from_dlpack).\n");
     } else {
-        printf("\nMISMATCH: rendered pixels != clear color. Layout/format issue.\n");
+        printf("\nMISMATCH: CUDA-read pixels != clear color.\n");
     }
 
     Engine::destroy(&engine);
