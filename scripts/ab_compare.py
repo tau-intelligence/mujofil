@@ -88,11 +88,20 @@ def worker_pbr(qpos_path, out_path, res, camera):
 
     W = H = res
     wh = Warehouse()
-    r, b = wh.create_renderer(W, H)
+    cfg = wh.default_config(W, H)
+    cfg.exposure = 1.6          # warehouse default 2.5 blows out the bright floor
+    r = _vf.Renderer(cfg)
+    r.initialize()
+    b = _vf.SceneBridge(r)
     b.load_model(mjm._address)
     wh.load(b)
+    # The warehouse ceiling spots have shadow-casting disabled, so objects look
+    # ungrounded. Add one near-vertical directional light WITH shadows to cast a
+    # contact shadow onto the floor without washing out the warehouse look.
+    b.add_directional_light(-0.15, 0.12, -1.0, 1.0, 0.98, 0.95, 11000.0, True)
     b.sync_transforms(mjm._address, host._address)
-    b.set_free_camera(*wh.CAMERAS[camera])
+    # Use the SAME camera as the flat render (scene cam0) for a fair A/B.
+    b.sync_camera(mjm._address, host._address, 0)
     img = np.asarray(r.render())[:, :, :3]
 
     from PIL import Image

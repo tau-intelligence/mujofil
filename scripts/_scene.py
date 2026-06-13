@@ -19,10 +19,10 @@ def build_xml() -> str:
             f'<material name="{name}" rgba="{rgba}" metallic="{met}" roughness="{rough}"/>')
         x = (i - (n - 1) / 2.0) * 0.62
         bodies.append(
-            f'<body name="b{i}" pos="{x:.3f} 0 0.30"><freejoint/>'
+            f'<body name="b{i}" pos="{x:.3f} 0 0.26"><freejoint/>'
             f'<geom type="sphere" size="0.24" material="{name}"/></body>')
     mats.append('<material name="steel" rgba="0.8 0.82 0.85 1" metallic="1.0" roughness="0.25"/>')
-    bodies.append('<body name="box" pos="0 0.7 0.32"><freejoint/>'
+    bodies.append('<body name="box" pos="0 0.7 0.23"><freejoint/>'
                   '<geom type="box" size="0.22 0.22 0.22" material="steel"/></body>')
     return f"""
 <mujoco model="ab_scene">
@@ -33,6 +33,6 @@ def build_xml() -> str:
   <worldbody>
     <geom name="floor" type="plane" size="20 20 0.1" group="3"/>
     {''.join(bodies)}
-    <camera name="cam0" pos="0 -3.2 1.25" xyaxes="1 0 0 0 0.36 0.93"/>
+    <camera name="cam0" pos="0 -3.0 1.05" xyaxes="1 0 0 0 0.33 0.94"/>
   </worldbody>
 </mujoco>"""
