@@ -16,6 +16,7 @@
 #include <pybind11/stl.h>
 
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
 #include <string>
 
@@ -28,6 +29,18 @@ namespace {
 
 const mjModel* MODEL(uintptr_t a) { return reinterpret_cast<const mjModel*>(a); }
 const mjData*  DATA (uintptr_t a) { return reinterpret_cast<const mjData*>(a); }
+
+// Frames-in-flight wave size. Filament caps in-flight frames; rendering more
+// than this before a sync drops frames. Measured safe max = 2 on this build
+// (K>=3 silently drops frames). Overridable via MUJOFIL_WARP_FLUSH_EVERY.
+int flush_every_init() {
+    if (const char* e = std::getenv("MUJOFIL_WARP_FLUSH_EVERY")) {
+        int v = atoi(e);
+        if (v >= 1) return v;
+    }
+    return 2;
+}
+const int FLUSH_EVERY = flush_every_init();
 
 // DLPack: wrap an externally-owned CUDA pointer (the renderer keeps ownership).
 struct DLCtx { int64_t shape[4]; };
@@ -94,11 +107,17 @@ public:
         {
             py::gil_scoped_release rel;
             renderer_->begin_batch();
+            // Filament caps frames-in-flight (~FLUSH_EVERY). Rendering more than
+            // that without a sync silently drops frames. So we render in waves of
+            // FLUSH_EVERY and flushAndWait once per wave — far cheaper than a sync
+            // per frame, while keeping every world's image distinct.
             for (uint32_t i = 0; i < n; ++i) {
                 bridge_->sync_transforms(MODEL(model), DATA(datas[i]));
                 if (cam >= 0) bridge_->sync_camera(MODEL(model), DATA(datas[i]), cam);
                 renderer_->render_frame_no_sync();
+                if ((i + 1) % FLUSH_EVERY == 0) renderer_->flush_wait();
             }
+            renderer_->flush_wait();  // ensure the final partial wave completes
         }
         void* dptr;
         {
@@ -110,6 +129,16 @@ public:
 
     uint32_t width() const { return renderer_->width(); }
     uint32_t height() const { return renderer_->height(); }
+
+    void reset_profile() { renderer_->reset_profile(); }
+    py::dict profile() {
+        py::dict d;
+        d["render_ms"] = renderer_->prof_render_ms();
+        d["flush_ms"] = renderer_->prof_flush_ms();
+        d["copy_ms"] = renderer_->prof_copy_ms();
+        d["frames"] = renderer_->prof_frames();
+        return d;
+    }
 
 private:
     // Build a DLPack capsule for an externally-owned CUDA buffer. ndim is 3 (H,W,4)
@@ -181,6 +210,8 @@ PYBIND11_MODULE(_mujofil_warp, m) {
         .def("render_batch_dlpack", &WarpRenderer::render_batch_dlpack,
              py::arg("model"), py::arg("datas"), py::arg("cam_id") = -1,
              "Render N worlds (one MjData each), one GPU sync; return (N,H,W,4) uint8 cuda DLPack.")
+        .def("reset_profile", &WarpRenderer::reset_profile)
+        .def("profile", &WarpRenderer::profile)
         .def_property_readonly("width", &WarpRenderer::width)
         .def_property_readonly("height", &WarpRenderer::height);
 }

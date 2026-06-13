@@ -14,6 +14,7 @@
 
 #include <cuda_runtime.h>
 
+#include <chrono>
 #include <cstring>
 #include <stdexcept>
 #include <vector>
@@ -148,6 +149,9 @@ struct Renderer::VulkanState {
     int cudaDevice = 0;
     cudaExternalMemory_t cudaExt = nullptr;
     void* cudaDptr = nullptr;
+    // profiling (nanoseconds)
+    long long t_render = 0, t_flush = 0, t_copy = 0;
+    int n_frames = 0;
 };
 
 Renderer::Renderer(const RendererConfig& config)
@@ -295,16 +299,39 @@ void Renderer::begin_batch() {
 }
 
 void Renderer::render_frame_no_sync() {
+    auto& v = *vk_;
+    using clk = std::chrono::high_resolution_clock;
+    auto t0 = clk::now();
     if (renderer_->beginFrame(swapchain_)) {
         renderer_->render(view_);
         renderer_->endFrame();
     }
-    // Filament caps frames-in-flight, so we must let each frame complete before
-    // the next beginFrame (otherwise later frames are silently dropped). This is
-    // Filament's own GPU sync; the BATCHING win comes from doing the pixel
-    // image->buffer copy + CUDA-visible queue sync ONCE for all N frames.
-    engine_->flushAndWait();
+    auto t1 = clk::now();
+    // Submit the frame's GPU work WITHOUT blocking the CPU (non-blocking flush).
+    // endFrame queues the work; flush() pushes it to the GPU and frees the
+    // command-buffer slot so the next beginFrame won't stall, but we DON'T wait
+    // here — the single flushAndWait in finish_batch_to_cuda syncs the whole
+    // batch at once (this is the batching win the old OpenGL path had).
+    engine_->flush();
+    auto t2 = clk::now();
+    v.t_render += std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
+    v.t_flush  += std::chrono::duration_cast<std::chrono::nanoseconds>(t2 - t1).count();
+    v.n_frames += 1;
 }
+
+void Renderer::flush_wait() {
+    auto& v = *vk_;
+    auto t0 = std::chrono::high_resolution_clock::now();
+    engine_->flushAndWait();
+    v.t_flush += std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::high_resolution_clock::now() - t0).count();
+}
+
+void Renderer::reset_profile() { vk_->t_render = vk_->t_flush = vk_->t_copy = 0; vk_->n_frames = 0; }
+double Renderer::prof_render_ms() const { return vk_->t_render / 1e6; }
+double Renderer::prof_flush_ms() const { return vk_->t_flush / 1e6; }
+double Renderer::prof_copy_ms() const { return vk_->t_copy / 1e6; }
+int Renderer::prof_frames() const { return vk_->n_frames; }
 
 void* Renderer::finish_batch_to_cuda(uint32_t n) {
     auto& v = *vk_;
@@ -360,6 +387,7 @@ void* Renderer::finish_batch_to_cuda(uint32_t n) {
 
     // The n frames rendered into images 0..n-1 (begin_batch reset to 0). Record
     // a barrier + image->buffer copy for each, in ONE command buffer.
+    auto _cp0 = std::chrono::high_resolution_clock::now();
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkBeginCommandBuffer(v.cmd, &bi);
@@ -387,6 +415,8 @@ void* Renderer::finish_batch_to_cuda(uint32_t n) {
     si.commandBufferCount = 1; si.pCommandBuffers = &v.cmd;
     vkQueueSubmit(v.myQueue, 1, &si, VK_NULL_HANDLE);
     vkQueueWaitIdle(v.myQueue);
+    v.t_copy += std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::high_resolution_clock::now() - _cp0).count();
     return v.cudaDptr;
 }
 

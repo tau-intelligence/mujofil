@@ -100,6 +100,12 @@ class WarpRenderer:
         ptrs = [_addr(d) for d in datas]
         return torch.from_dlpack(self._r.render_batch_dlpack(_addr(model), ptrs, cam_id))
 
+    def reset_profile(self):
+        self._r.reset_profile()
+
+    def profile(self) -> dict:
+        return self._r.profile()
+
     @property
     def geom_count(self) -> int:
         return self._r.geom_count
