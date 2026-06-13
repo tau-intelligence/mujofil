@@ -90,6 +90,16 @@ class WarpRenderer:
         import torch
         return torch.from_dlpack(self._r.render_dlpack())
 
+    def render_batch(self, model, datas, cam_id: int = -1):
+        """Render N worlds (one MjData each) with ONE GPU sync.
+
+        Returns an (N, H, W, 4) uint8 torch.cuda tensor (zero-copy). The renderer
+        must have been created with config.batch_size >= len(datas).
+        """
+        import torch
+        ptrs = [_addr(d) for d in datas]
+        return torch.from_dlpack(self._r.render_batch_dlpack(_addr(model), ptrs, cam_id))
+
     @property
     def geom_count(self) -> int:
         return self._r.geom_count

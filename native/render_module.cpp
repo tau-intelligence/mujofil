@@ -30,7 +30,7 @@ const mjModel* MODEL(uintptr_t a) { return reinterpret_cast<const mjModel*>(a); 
 const mjData*  DATA (uintptr_t a) { return reinterpret_cast<const mjData*>(a); }
 
 // DLPack: wrap an externally-owned CUDA pointer (the renderer keeps ownership).
-struct DLCtx { int64_t shape[3]; };
+struct DLCtx { int64_t shape[4]; };
 
 void dl_deleter(DLManagedTensor* self) {
     delete static_cast<DLCtx*>(self->manager_ctx);
@@ -85,17 +85,46 @@ public:
             py::gil_scoped_release rel;
             dptr = renderer_->render_to_cuda();
         }
+        return wrap(dptr, 3, renderer_->height(), renderer_->width());
+    }
+
+    // --- batched zero-copy render -> torch (N,H,W,4) ---
+    py::capsule render_batch_dlpack(uintptr_t model, const std::vector<uintptr_t>& datas, int cam) {
+        const uint32_t n = (uint32_t)datas.size();
+        {
+            py::gil_scoped_release rel;
+            renderer_->begin_batch();
+            for (uint32_t i = 0; i < n; ++i) {
+                bridge_->sync_transforms(MODEL(model), DATA(datas[i]));
+                if (cam >= 0) bridge_->sync_camera(MODEL(model), DATA(datas[i]), cam);
+                renderer_->render_frame_no_sync();
+            }
+        }
+        void* dptr;
+        {
+            py::gil_scoped_release rel;
+            dptr = renderer_->finish_batch_to_cuda(n);
+        }
+        return wrap(dptr, 4, renderer_->height(), renderer_->width(), n);
+    }
+
+    uint32_t width() const { return renderer_->width(); }
+    uint32_t height() const { return renderer_->height(); }
+
+private:
+    // Build a DLPack capsule for an externally-owned CUDA buffer. ndim is 3 (H,W,4)
+    // or 4 (N,H,W,4); pass the dims in order.
+    py::capsule wrap(void* dptr, int ndim, int64_t d0, int64_t d1, int64_t d2 = 0) {
         auto* ctx = new DLCtx();
-        ctx->shape[0] = renderer_->height();
-        ctx->shape[1] = renderer_->width();
-        ctx->shape[2] = 4;
+        if (ndim == 4) { ctx->shape[0] = d2; ctx->shape[1] = d0; ctx->shape[2] = d1; ctx->shape[3] = 4; }
+        else           { ctx->shape[0] = d0; ctx->shape[1] = d1; ctx->shape[2] = 4; }
         auto* mt = new DLManagedTensor();
         mt->manager_ctx = ctx;
         mt->deleter = dl_deleter;
         DLTensor& t = mt->dl_tensor;
         t.data = dptr;
         t.device = DLDevice{kDLCUDA, renderer_->cuda_device()};
-        t.ndim = 3;
+        t.ndim = ndim;
         t.dtype = DLDataType{kDLUInt, 8, 1};
         t.shape = ctx->shape;
         t.strides = nullptr;
@@ -103,10 +132,6 @@ public:
         return py::capsule(mt, "dltensor", capsule_dtor);
     }
 
-    uint32_t width() const { return renderer_->width(); }
-    uint32_t height() const { return renderer_->height(); }
-
-private:
     std::unique_ptr<Renderer> renderer_;
     std::unique_ptr<SceneBridge> bridge_;
 };
@@ -128,7 +153,8 @@ PYBIND11_MODULE(_mujofil_warp, m) {
         .def_readwrite("enable_shadows", &RendererConfig::enable_shadows)
         .def_readwrite("exposure", &RendererConfig::exposure)
         .def_readwrite("tone_mapping", &RendererConfig::tone_mapping)
-        .def_readwrite("dithering", &RendererConfig::dithering);
+        .def_readwrite("dithering", &RendererConfig::dithering)
+        .def_readwrite("batch_size", &RendererConfig::batch_size);
 
     py::class_<WarpRenderer>(m, "WarpRenderer")
         .def(py::init<const RendererConfig&>(), py::arg("config"))
@@ -152,6 +178,9 @@ PYBIND11_MODULE(_mujofil_warp, m) {
         .def_property_readonly("geom_count", &WarpRenderer::geom_count)
         .def("render_dlpack", &WarpRenderer::render_dlpack,
              "Render the scene; return a DLPack capsule (H,W,4 uint8 cuda) for torch.from_dlpack.")
+        .def("render_batch_dlpack", &WarpRenderer::render_batch_dlpack,
+             py::arg("model"), py::arg("datas"), py::arg("cam_id") = -1,
+             "Render N worlds (one MjData each), one GPU sync; return (N,H,W,4) uint8 cuda DLPack.")
         .def_property_readonly("width", &WarpRenderer::width)
         .def_property_readonly("height", &WarpRenderer::height);
 }

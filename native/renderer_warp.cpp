@@ -25,7 +25,6 @@ using namespace bluevk;
 namespace vf_mujoco {
 
 namespace {
-constexpr uint32_t SC_SIZE = 2;
 constexpr VkFormat COLOR_FMT = VK_FORMAT_R8G8B8A8_UNORM;
 constexpr VkFormat DEPTH_FMT = VK_FORMAT_D32_SFLOAT;
 
@@ -54,10 +53,12 @@ class ExportPlatform : public VulkanPlatform {
 public:
     ExportSwapChain* sc = nullptr;
     uint32_t lastAcquired = 0;
+    uint32_t scSize = 2;   // # images = max(batch_size, 2)
 
     SwapChainPtr createSwapChain(void*, uint64_t, VkExtent2D extent) override {
         VkDevice device = getDevice();
         VkPhysicalDevice phys = getPhysicalDevice();
+        const uint32_t SC_SIZE = scSize;
         auto* s = new ExportSwapChain();
         s->bundle.extent = extent;
         s->bundle.colorFormat = COLOR_FMT;
@@ -112,7 +113,7 @@ public:
     VkResult acquire(SwapChainPtr, ImageSyncData* out) override {
         out->imageIndex = lastAcquired; out->imageReadySemaphore = VK_NULL_HANDLE;
         out->explicitImageReadyWait = nullptr;
-        lastAcquired = (lastAcquired + 1) % SC_SIZE; return VK_SUCCESS;
+        lastAcquired = (lastAcquired + 1) % scSize; return VK_SUCCESS;
     }
     VkResult present(SwapChainPtr, uint32_t, VkSemaphore) override { return VK_SUCCESS; }
     bool hasResized(SwapChainPtr) override { return false; }
@@ -142,6 +143,7 @@ struct Renderer::VulkanState {
     PFN_vkGetMemoryFdKHR pfnGetMemoryFd = nullptr;
     VkBuffer expBuf = VK_NULL_HANDLE;
     VkDeviceMemory expMem = VK_NULL_HANDLE;
+    VkDeviceSize expBytes = 0;
     ExportPlatform platform;
     int cudaDevice = 0;
     cudaExternalMemory_t cudaExt = nullptr;
@@ -231,6 +233,8 @@ bool Renderer::initialize() {
             .featureLevel(Engine::FeatureLevel::FEATURE_LEVEL_1).build();
     if (!engine_) throw std::runtime_error("Filament engine build failed");
 
+    // One swapchain image per batched world (>=2 for the single path).
+    v.platform.scSize = config_.batch_size > 2 ? config_.batch_size : 2;
     swapchain_ = engine_->createSwapChain(config_.width, config_.height);
     renderer_ = engine_->createRenderer();
     scene_ = engine_->createScene();
@@ -286,19 +290,37 @@ void Renderer::setup_color_grading() {
     view_->setColorGrading(color_grading_);
 }
 
-void* Renderer::render_to_cuda() {
-    auto& v = *vk_;
+void Renderer::begin_batch() {
+    vk_->platform.lastAcquired = 0;
+}
+
+void Renderer::render_frame_no_sync() {
     if (renderer_->beginFrame(swapchain_)) {
         renderer_->render(view_);
         renderer_->endFrame();
     }
+    // Filament caps frames-in-flight, so we must let each frame complete before
+    // the next beginFrame (otherwise later frames are silently dropped). This is
+    // Filament's own GPU sync; the BATCHING win comes from doing the pixel
+    // image->buffer copy + CUDA-visible queue sync ONCE for all N frames.
     engine_->flushAndWait();
+}
 
-    const VkDeviceSize bytes = (VkDeviceSize)config_.width * config_.height * 4;
-    uint32_t idx = (v.platform.lastAcquired + SC_SIZE - 1) % SC_SIZE;
-    VkImage rendered = v.platform.sc->bundle.colors[idx];
+void* Renderer::finish_batch_to_cuda(uint32_t n) {
+    auto& v = *vk_;
+    if (n == 0) return v.cudaDptr;
+    engine_->flushAndWait();   // ONE GPU sync for all n rendered frames
 
-    if (!v.expBuf) {
+    const VkDeviceSize slice = (VkDeviceSize)config_.width * config_.height * 4;
+    const VkDeviceSize bytes = slice * n;
+
+    // (re)create the exportable buffer + CUDA import if we need more room.
+    if (!v.expBuf || v.expBytes < bytes) {
+        if (v.cudaDptr) { cudaFree(v.cudaDptr); v.cudaDptr = nullptr; }
+        if (v.cudaExt) { cudaDestroyExternalMemory(v.cudaExt); v.cudaExt = nullptr; }
+        if (v.expBuf) { vkDestroyBuffer(v.device, v.expBuf, nullptr); v.expBuf = VK_NULL_HANDLE; }
+        if (v.expMem) { vkFreeMemory(v.device, v.expMem, nullptr); v.expMem = VK_NULL_HANDLE; }
+
         VkExternalMemoryBufferCreateInfo extBuf{
             VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO};
         extBuf.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
@@ -328,35 +350,50 @@ void* Renderer::render_to_cuda() {
         cudaExternalMemoryBufferDesc bd{}; bd.offset = 0; bd.size = bytes; bd.flags = 0;
         if (cudaExternalMemoryGetMappedBuffer(&v.cudaDptr, v.cudaExt, &bd) != cudaSuccess)
             throw std::runtime_error("cudaExternalMemoryGetMappedBuffer");
-        VkCommandBufferAllocateInfo cai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-        cai.commandPool = v.pool; cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; cai.commandBufferCount = 1;
-        vkok(vkAllocateCommandBuffers(v.device, &cai, &v.cmd), "cmd");
+        v.expBytes = bytes;
+        if (!v.cmd) {
+            VkCommandBufferAllocateInfo cai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+            cai.commandPool = v.pool; cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; cai.commandBufferCount = 1;
+            vkok(vkAllocateCommandBuffers(v.device, &cai, &v.cmd), "cmd");
+        }
     }
 
+    // The n frames rendered into images 0..n-1 (begin_batch reset to 0). Record
+    // a barrier + image->buffer copy for each, in ONE command buffer.
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkBeginCommandBuffer(v.cmd, &bi);
-    VkImageMemoryBarrier toSrc{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-    toSrc.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-    toSrc.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    toSrc.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    toSrc.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    toSrc.image = rendered;
-    toSrc.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    toSrc.srcAccessMask = 0; toSrc.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    vkCmdPipelineBarrier(v.cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toSrc);
-    VkBufferImageCopy region{};
-    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    region.imageExtent = {config_.width, config_.height, 1};
-    vkCmdCopyImageToBuffer(v.cmd, rendered, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                           v.expBuf, 1, &region);
+    for (uint32_t i = 0; i < n; ++i) {
+        VkImage img = v.platform.sc->bundle.colors[i];
+        VkImageMemoryBarrier toSrc{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        toSrc.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        toSrc.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        toSrc.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toSrc.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toSrc.image = img;
+        toSrc.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        toSrc.srcAccessMask = 0; toSrc.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        vkCmdPipelineBarrier(v.cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toSrc);
+        VkBufferImageCopy region{};
+        region.bufferOffset = (VkDeviceSize)i * slice;
+        region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        region.imageExtent = {config_.width, config_.height, 1};
+        vkCmdCopyImageToBuffer(v.cmd, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               v.expBuf, 1, &region);
+    }
     vkEndCommandBuffer(v.cmd);
     VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     si.commandBufferCount = 1; si.pCommandBuffers = &v.cmd;
     vkQueueSubmit(v.myQueue, 1, &si, VK_NULL_HANDLE);
     vkQueueWaitIdle(v.myQueue);
     return v.cudaDptr;
+}
+
+void* Renderer::render_to_cuda() {
+    begin_batch();
+    render_frame_no_sync();
+    return finish_batch_to_cuda(1);
 }
 
 int Renderer::cuda_device() const { return vk_->cudaDevice; }

@@ -81,6 +81,45 @@ def worker_pbr(res, iters, warmup):
     return iters / (time.perf_counter() - t0)
 
 
+def worker_pbr_batch(res, iters, warmup, nworld):
+    """Ours, BATCHED: render nworld worlds per call, one GPU sync. cameras/sec."""
+    import numpy as np
+    import mujoco
+    import torch
+    from mujofil_warp import WarpRenderer, RendererConfig
+
+    m = mujoco.MjModel.from_xml_string(SCENE)
+    datas = [mujoco.MjData(m) for _ in range(nworld)]
+    for i, dd in enumerate(datas):
+        dd.qpos[:] = 0
+        # nudge each world so they differ (realistic: distinct states)
+        if m.nq >= 1:
+            dd.qpos[0] += 0.01 * i
+        mujoco.mj_forward(m, dd)
+
+    cfg = RendererConfig(); cfg.width = cfg.height = res
+    cfg.batch_size = nworld
+    cfg.enable_ssao = True; cfg.enable_shadows = True; cfg.enable_msaa = True
+    cfg.exposure = 1.4
+    r = WarpRenderer(cfg)
+    r.load_model(m)
+    ibl, sky = _ibl()
+    if os.path.exists(ibl):
+        r.load_ibl(ibl, sky); r.set_ambient_intensity(9000.0)
+    r.add_directional_light(-0.3, 0.2, -1.0, 1.0, 0.98, 0.95, 60000.0, True)
+
+    def step():
+        t = r.render_batch(m, datas, cam_id=0)[..., :3].float()
+        torch.cuda.synchronize()
+        return t
+
+    for _ in range(warmup): step()
+    t0 = time.perf_counter()
+    for _ in range(iters): step()
+    dt = time.perf_counter() - t0
+    return nworld * iters / dt   # cameras/sec
+
+
 def worker_mjwarp(res, iters, warmup, nworld):
     """MJWarp raycaster. Throughput = cameras/sec = nworld / time_per_render."""
     import numpy as np
@@ -119,7 +158,7 @@ def worker_mjwarp(res, iters, warmup, nworld):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--worker", choices=["pbr", "mjwarp"], default=None)
+    ap.add_argument("--worker", choices=["pbr", "pbr_batch", "mjwarp"], default=None)
     ap.add_argument("--res", type=int, default=256)
     ap.add_argument("--iters", type=int, default=200)
     ap.add_argument("--warmup", type=int, default=40)
@@ -128,6 +167,9 @@ def main():
 
     if args.worker == "pbr":
         print("FPS " + json.dumps({"fps": worker_pbr(args.res, args.iters, args.warmup)}))
+        return
+    if args.worker == "pbr_batch":
+        print("FPS " + json.dumps({"fps": worker_pbr_batch(args.res, args.iters, args.warmup, args.nworld)}))
         return
     if args.worker == "mjwarp":
         print("FPS " + json.dumps({"fps": worker_mjwarp(args.res, args.iters, args.warmup, args.nworld)}))
@@ -163,11 +205,17 @@ def main():
         cols = [run("mjwarp", res, nworld=n, iters=80, warmup=10) for n in [1, 16, 64, 256]]
         print(f"{res:>6} " + " ".join(f"{c:>10.0f}" for c in cols))
 
+    print("\n=== OURS BATCHED PBR (apples-to-apples), cameras/sec ===")
+    print(f"{'res':>6} {'N=1':>10} {'N=16':>10} {'N=64':>10} {'N=256':>10}")
+    print("-" * 52)
+    for res in [128, 256]:
+        cols = [run("pbr_batch", res, nworld=n, iters=60, warmup=10) for n in [1, 16, 64, 256]]
+        print(f"{res:>6} " + " ".join(f"{c:>10.0f}" for c in cols))
+
     print("\nNotes:")
     print(" - mjwarp_flat = single-hit Lambertian (no PBR/IBL/reflections).")
-    print(" - warp_pbr    = full PBR + IBL + shadows, zero-copy to torch.")
-    print(" - MJWarp scales by batching N worlds on GPU; ours renders 1 camera")
-    print("   at photoreal quality. Different trade-offs (throughput vs fidelity).")
+    print(" - ours = full PBR + IBL + shadows, zero-copy to torch.")
+    print(" - cameras/sec = total images/sec (N worlds per batched call).")
 
 
 if __name__ == "__main__":

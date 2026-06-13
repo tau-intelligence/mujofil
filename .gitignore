@@ -26,3 +26,5 @@ test_5a.py
 native/obj/
 native/vendor/
 test_5b.py
+test_batch.py
+out/
