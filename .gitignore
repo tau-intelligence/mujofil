@@ -1,0 +1,12 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Outputs
+out/
+*.png
+*.mp4
+
+# Warp kernel cache (local)
+.warp_cache/
