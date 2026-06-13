@@ -61,18 +61,28 @@ Confirmed available on RTX 4060 Laptop / Ubuntu 22.04 / CUDA 12.4 driver:
 - **Filament exposes a Vulkan platform layer**:
   `include/backend/platforms/VulkanPlatform.h` exists in the prebuilt deps.
 
-### The one unverified, make-or-break risk
+### Make-or-break risk — RESOLVED at the primitive level ✅
 
-`Texture::import()` is documented with **Metal and OpenGL** native-texture
-examples. **Vulkan external-memory sharing with CUDA** (the path we need:
-`VK_KHR_external_memory` → CUDA `cudaExternalMemory` → torch tensor) is **not
-confirmed** for the *prebuilt* Filament binary. The prebuilt Vulkan backend
-likely creates its own `VkDevice`/queues without exporting memory handles.
+The core unknown was whether **Vulkan external-memory sharing with CUDA**
+(`VK_KHR_external_memory_fd` → `cudaImportExternalMemory` → device ptr) works on
+this driver. **It does.** See `spikes/vk_cuda_interop/` — a standalone C++ program
+(no Filament, no MuJoCo) that:
+- allocated DEVICE_LOCAL **exportable** memory on the RTX 4060,
+- wrote a known pattern with `vkCmdFillBuffer` (Vulkan, on-GPU),
+- exported an opaque FD (`vkGetMemoryFdKHR`),
+- imported it into CUDA (`cudaImportExternalMemory`, UUID-matched device),
+- read all 65536 words back via CUDA == the Vulkan-written pattern, **zero host
+  copies**.
 
-**Therefore the likely requirement: build Filament from source** with a custom
-`VulkanPlatform` that (a) creates images with `VK_EXTERNAL_MEMORY_HANDLE_TYPE_*`
-and (b) exposes the FD/handle so CUDA can import it. This is the central
-engineering risk and must be de-risked early (Phase 2 spike).
+Result: `INTEROP OK`. The zero-copy *pixel-output* path is viable; backend
+choice = **Vulkan** (decided by evidence, not assumption).
+
+**Remaining (engineering, not feasibility):** make *Filament* allocate its color
+attachment as exportable external memory instead of my hand-rolled `VkBuffer`.
+That means **building Filament from source** with a custom `VulkanPlatform` that
+(a) creates the render-target image with
+`VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT` and (b) exposes the FD. The
+mechanism is proven; this is wiring it into Filament's allocator.
 
 ---
 
@@ -96,22 +106,25 @@ Prove PBR images can be produced from MJWarp state, ignoring performance.
 - **Risk:** low. Reuses shipped code. Mismatch in geom ordering/units is the only
   gotcha.
 
-### Phase 2 — Zero-copy pixel OUTPUT (the critical spike)
+### Phase 2 — Zero-copy pixel OUTPUT
 Eliminate readback + re-upload of pixels.
-1. Build Filament from source (Vulkan) with a custom `VulkanPlatform` that
-   allocates the render-target color attachment as **exportable external memory**.
-2. Export the Vulkan image memory (opaque FD on Linux) and import into CUDA via
-   `cudaImportExternalMemory` / `cudaExternalMemoryGetMappedBuffer`.
-3. Wrap the CUDA pointer as a PyTorch tensor (dlpack / `torch.as_tensor` on the
-   device pointer). Learner reads pixels **without leaving the GPU**.
+- **Primitive PROVEN** ✅ (`spikes/vk_cuda_interop/`): Vulkan-exported
+  device-local memory is imported and read by CUDA with zero host copies on this
+  driver. See "Make-or-break risk — RESOLVED" above.
+- Remaining steps:
+  1. Build Filament from source (Vulkan) with a custom `VulkanPlatform` that
+     allocates the render-target color attachment as **exportable external
+     memory** (same `VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT` proven in the
+     spike, applied to Filament's image allocator).
+  2. Export the image memory FD and import into CUDA
+     (`cudaImportExternalMemory` / `cudaExternalMemoryGetMappedBuffer`).
+  3. Wrap the CUDA pointer as a PyTorch tensor. Learner reads pixels **without
+     leaving the GPU**.
 - **Deliverable:** a torch CUDA tensor whose contents are Filament's render, with
   **no `glReadPixels`/memcpy** on the hot path.
-- **Risk:** HIGH — this validates the whole thesis. If the prebuilt or
-  from-source Filament cannot export Vulkan memory compatibly with CUDA on this
-  driver, Option B's zero-copy premise fails and we fall back to "PBR offline
-  renderer for MJWarp" (still useful, but not throughput-competitive).
-- **Mitigation:** spike this in isolation FIRST (a minimal Vulkan image →
-  CUDA → torch demo) before wiring any MuJoCo/Filament scene logic.
+- **Risk:** now MEDIUM (was HIGH). Feasibility is proven; the work is making
+  Filament's allocator use exportable memory + a proper Vulkan→CUDA semaphore for
+  fine-grained sync (the spike used a coarse `vkQueueWaitIdle`).
 
 ### Phase 3 — Efficient transform INPUT
 Reduce/parallelize the transform path now that pixels are zero-copy.

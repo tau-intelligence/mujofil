@@ -10,3 +10,7 @@ out/
 
 # Warp kernel cache (local)
 .warp_cache/
+
+# Spike binaries
+spikes/**/vk_cuda_interop
+spikes/**/*.o
