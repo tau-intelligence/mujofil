@@ -23,3 +23,6 @@ spikes/dlpack_torch/*.so
 spikes/dlpack_torch/include/
 native/*.so
 test_5a.py
+native/obj/
+native/vendor/
+test_5b.py
