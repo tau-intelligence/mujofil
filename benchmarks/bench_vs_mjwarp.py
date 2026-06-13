@@ -28,6 +28,9 @@ IBL_DIR = os.path.join(HERE, "assets", "ibl", "warehouse_new")
 # A primitives-only scene (MJWarp prefers primitives; identical geometry for both).
 SCENE = """
 <mujoco>
+  <visual>
+    <global offwidth="1024" offheight="1024"/>
+  </visual>
   <asset>
     <material name="chrome" rgba="0.95 0.95 0.97 1" metallic="1.0" roughness="0.08"/>
     <material name="gold"   rgba="1.0 0.78 0.34 1"  metallic="1.0" roughness="0.22"/>
@@ -156,9 +159,42 @@ def worker_mjwarp(res, iters, warmup, nworld):
     return nworld * iters / dt   # cameras/sec
 
 
+def worker_mujoco(res, iters, warmup, nworld):
+    """Stock CPU MuJoCo renderer (EGL/OpenGL), N envs rendered SEQUENTIALLY (it
+    has no batching), each uploaded to torch.cuda. cameras/sec."""
+    os.environ.setdefault("MUJOCO_GL", "egl")
+    import numpy as np
+    import mujoco
+    import torch
+
+    m = mujoco.MjModel.from_xml_string(SCENE)
+    datas = [mujoco.MjData(m) for _ in range(nworld)]
+    for i, dd in enumerate(datas):
+        dd.qpos[:] = 0
+        if m.nq >= 1:
+            dd.qpos[0] += 0.01 * i
+        mujoco.mj_forward(m, dd)
+    r = mujoco.Renderer(m, height=res, width=res)
+
+    def step():
+        out = np.empty((nworld, res, res, 3), dtype=np.uint8)
+        for i, dd in enumerate(datas):
+            r.update_scene(dd, camera=0)
+            out[i] = r.render()
+        t = torch.from_numpy(out).to("cuda").float()
+        torch.cuda.synchronize()
+        return t
+
+    for _ in range(warmup): step()
+    t0 = time.perf_counter()
+    for _ in range(iters): step()
+    dt = time.perf_counter() - t0
+    return nworld * iters / dt   # cameras/sec
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--worker", choices=["pbr", "pbr_batch", "mjwarp"], default=None)
+    ap.add_argument("--worker", choices=["pbr", "pbr_batch", "mjwarp", "mujoco"], default=None)
     ap.add_argument("--res", type=int, default=256)
     ap.add_argument("--iters", type=int, default=200)
     ap.add_argument("--warmup", type=int, default=40)
@@ -170,6 +206,9 @@ def main():
         return
     if args.worker == "pbr_batch":
         print("FPS " + json.dumps({"fps": worker_pbr_batch(args.res, args.iters, args.warmup, args.nworld)}))
+        return
+    if args.worker == "mujoco":
+        print("FPS " + json.dumps({"fps": worker_mujoco(args.res, args.iters, args.warmup, args.nworld)}))
         return
     if args.worker == "mjwarp":
         print("FPS " + json.dumps({"fps": worker_mjwarp(args.res, args.iters, args.warmup, args.nworld)}))
