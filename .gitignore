@@ -5,6 +5,7 @@ __pycache__/
 
 # Outputs
 out/
+!assets/ibl/
 *.png
 *.mp4
 

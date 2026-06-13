@@ -27,6 +27,11 @@ import warp as wp
 
 from mujofil import native as vf
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+IBL_DIR = os.path.join(HERE, os.pardir, "assets", "ibl", "studio")
+IBL_KTX = os.path.normpath(os.path.join(IBL_DIR, "studio_ibl_ibl.ktx"))
+SKYBOX_KTX = os.path.normpath(os.path.join(IBL_DIR, "studio_ibl_skybox.ktx"))
+
 
 # A scene of primitives with distinct materials. PBR (metal/rough + specular)
 # vs MJWarp's flat Lambertian should be visually obvious here.
@@ -37,20 +42,20 @@ SCENE_XML = """
   </visual>
   <worldbody>
     <light name="key" pos="1.5 -1.5 3" dir="-0.4 0.4 -1" diffuse="1 1 1"/>
-    <geom name="floor" type="plane" size="5 5 0.1" rgba="0.55 0.55 0.6 1"/>
-    <body name="box" pos="0 0 0.8">
+    <geom name="floor" type="plane" size="5 5 0.1" rgba="0.78 0.76 0.72 1"/>
+    <body name="box" pos="0 0 0.45">
       <freejoint/>
       <geom type="box" size="0.22 0.22 0.22" rgba="0.85 0.25 0.2 1"/>
     </body>
-    <body name="ball" pos="0.7 0.25 1.0">
+    <body name="ball" pos="0.7 0.25 0.6">
       <freejoint/>
       <geom type="sphere" size="0.22" rgba="0.2 0.55 0.85 1"/>
     </body>
-    <body name="pin" pos="-0.6 -0.4 0.9">
+    <body name="pin" pos="-0.6 -0.4 0.55">
       <freejoint/>
       <geom type="capsule" size="0.13 0.26" rgba="0.85 0.75 0.2 1"/>
     </body>
-    <camera name="cam0" pos="2.2 -2.2 1.7" xyaxes="0.7 0.7 0 -0.38 0.38 0.84"/>
+    <camera name="cam0" pos="2.4 -2.4 1.4" xyaxes="0.7071 0.7071 0 -0.227 0.227 0.947"/>
   </worldbody>
 </mujoco>
 """
@@ -120,10 +125,18 @@ def render_pbr(mjm, qpos_all, W, H, out, k):
     b = vf.SceneBridge(r)
     b.load_model(mjm._address)
 
-    # lighting: a key + fill + soft ambient so PBR specular/material reads well
-    b.set_ambient_intensity(0.35)
-    b.add_directional_light(-0.4, 0.4, -1.0, 1.0, 0.98, 0.95, 90000.0, True)
-    b.add_point_light(1.6, -1.6, 2.6, 1.0, 0.9, 0.8, 6.0e5, 8.0)
+    # Image-based lighting: this is what makes PBR visibly win over flat shading
+    # (real reflections, ambient occlusion, grounded look). Skybox doubles as a
+    # backdrop instead of a flat clear color.
+    if os.path.exists(IBL_KTX) and os.path.exists(SKYBOX_KTX):
+        b.load_ibl(IBL_KTX, SKYBOX_KTX)
+        b.set_ambient_intensity(1.0)
+    else:
+        b.set_ambient_intensity(0.35)
+        print(f"    [warn] IBL not found at {IBL_DIR}; falling back to flat ambient")
+
+    # one key directional light WITH shadows for contact grounding + crisp form
+    b.add_directional_light(-0.4, 0.4, -1.0, 1.0, 0.98, 0.95, 80000.0, True)
 
     from PIL import Image
     n = min(k, qpos_all.shape[0])
