@@ -19,3 +19,5 @@ third_party/filament-src/
 
 # Filament binary
 spikes/filament_vk_export/build/
+spikes/dlpack_torch/*.so
+spikes/dlpack_torch/include/
