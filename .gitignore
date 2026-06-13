@@ -15,3 +15,7 @@ out/
 # Spike binaries
 spikes/**/vk_cuda_interop
 spikes/**/*.o
+third_party/filament-src/
+
+# Filament binary
+spikes/filament_vk_export/build/
