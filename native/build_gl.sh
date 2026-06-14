@@ -6,7 +6,7 @@
 set -e
 cd "$(dirname "$0")"
 
-FILAMENT_DIR=${FILAMENT_DIR:-/home/mumuksh/Visual-Fidelity-Mujoco/deps/filament}
+FILAMENT_DIR=${FILAMENT_DIR:-$HOME/filament-build/out/release/filament}
 DLPACK_INC=../third_party/dlpack/include
 UTILS_INC=../third_party/utils_include
 
@@ -54,7 +54,7 @@ echo "  LD _mujofil_warp_gl${EXT_SUFFIX}"
 clang++ -shared -stdlib=libc++ "${OBJS[@]}" \
     -L"$FILAMENT_DIR/lib/x86_64" -L/usr/lib/x86_64-linux-gnu \
     -Wl,--start-group $FIL_LIBS -Wl,--end-group \
-    -lGL -lX11 -lcudart -lpthread -ldl -lz \
+    -lGL -lEGL -lcudart -lpthread -ldl -lz \
     -o "_mujofil_warp_gl${EXT_SUFFIX}"
 
 echo "built native/_mujofil_warp_gl${EXT_SUFFIX}"

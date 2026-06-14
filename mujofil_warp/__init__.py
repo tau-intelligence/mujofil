@@ -42,13 +42,14 @@ def _load_native(backend: str | None = None):
     """Select the native backend: 'gl' (default, OpenGL single-sync) or 'vulkan'.
 
     The GL backend (`_mujofil_warp_gl`) renders N worlds into N GL textures with a
-    single flushAndWait (true single-sync) and exports them to CUDA via GL interop;
-    it is the fastest path but requires an X display (DISPLAY set). The Vulkan
-    backend (`_mujofil_warp`) uses a shared device + exportable swapchain and works
-    headless (no X). Override with MUJOFIL_WARP_BACKEND=gl|vulkan.
+    single flushAndWait (true single-sync) and exports them to CUDA via GL interop.
+    It is the fastest path and is fully **headless** (surfaceless EGL — no X server
+    required). The Vulkan backend (`_mujofil_warp`) uses a shared device +
+    exportable swapchain and is also headless. Override with
+    MUJOFIL_WARP_BACKEND=gl|vulkan.
 
-    Default is 'gl'. If 'gl' is requested implicitly (no explicit override) but no
-    X display is available or the GL module isn't built, we fall back to Vulkan.
+    Default is 'gl'. If 'gl' is requested implicitly (no explicit override) but the
+    GL module isn't built / can't initialize, we fall back to Vulkan.
     """
     explicit = backend is not None or "MUJOFIL_WARP_BACKEND" in os.environ
     backend = (backend or os.environ.get("MUJOFIL_WARP_BACKEND", "gl")).lower()
@@ -57,12 +58,10 @@ def _load_native(backend: str | None = None):
         import _mujofil_warp as _vk  # noqa: E402
         return _vk
 
-    # GL path (default). Fall back to Vulkan only when GL wasn't explicitly asked
-    # for and the environment can't support it (headless / module missing).
+    # GL path (default), headless via EGL. Fall back to Vulkan only when GL wasn't
+    # explicitly asked for and its module is missing/unimportable.
     if backend in ("gl", "opengl"):
         try:
-            if not os.environ.get("DISPLAY"):
-                raise RuntimeError("no X display (DISPLAY unset)")
             import _mujofil_warp_gl as _gl  # noqa: E402
             return _gl
         except Exception:

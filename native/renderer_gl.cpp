@@ -1,24 +1,31 @@
-// mujofil-warp OpenGL (GLX) renderer: the TRUE single-sync zero-copy path.
+// mujofil-warp OpenGL (EGL) renderer: the TRUE single-sync zero-copy path,
+// HEADLESS (no X server required).
 //
 // Filament's GL backend uses an in-order command queue with NO 2-frame-in-flight
 // cap (unlike Vulkan), so we can render N worlds into N distinct GL textures and
 // issue a SINGLE flushAndWait — exactly the batching win the old fast OpenGL
 // render_batch_rgb had — while keeping pixels on the GPU via GL<->CUDA interop.
 //
-// Pipeline: create a GLX context we own -> share it with Filament -> create N GL
-// textures and Texture::import each as a RenderTarget color attachment -> render
-// world i into texture i (no flush) -> ONE flushAndWait -> cudaGraphicsGLRegister
-// + map + memcpy2DFromArray each texture into a single (N,H,W,4) CUDA buffer ->
-// DLPack -> torch.cuda. No CPU round-trip.
+// Pipeline: create a SURFACELESS EGL desktop-GL context we own -> share it with
+// Filament (built with FILAMENT_SUPPORTS_EGL_ON_LINUX -> PlatformEGLHeadless) ->
+// create N GL textures and Texture::import each as a RenderTarget color
+// attachment -> render world i into texture i (no flush) -> ONE flushAndWait ->
+// cudaGraphicsGLRegister + map + memcpy2DFromArray each texture into a single
+// (N,H,W,4) CUDA buffer -> DLPack -> torch.cuda. No CPU round-trip, no display.
+//
+// Our EGL context mirrors Filament's PlatformEGL display selection (default
+// display first, EGL_PLATFORM_DEVICE_EXT fallback for true headless) and binds
+// EGL_OPENGL_API so it shares object namespace with Filament's context.
 //
 // Implements the SAME vf_mujoco::Renderer interface as renderer_warp.cpp; compiled
 // INSTEAD of it (mutually exclusive), so Renderer::VulkanState here holds GL state.
 #include "core/renderer.h"
 
-#include <X11/Xlib.h>
-#include <GL/glx.h>
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
 #include <GL/gl.h>
 
+#include <cstring>
 #include <cuda_runtime.h>
 #include <cuda_gl_interop.h>
 
@@ -48,15 +55,40 @@ using clk = std::chrono::high_resolution_clock;
 inline long long ns(clk::time_point a, clk::time_point b) {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(b - a).count();
 }
-typedef GLXContext (*PFNGLXCREATECTXATTRIBS)(Display*, GLXFBConfig, GLXContext, Bool, const int*);
+
+// Open an EGL display the same way Filament's PlatformEGL::createDriver does:
+// the default display first, then the EGL_PLATFORM_DEVICE_EXT NVIDIA device
+// (true headless, no X). Returns an INITIALIZED display or EGL_NO_DISPLAY.
+EGLDisplay openEglDisplay() {
+    EGLDisplay d = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    EGLint major, minor;
+    if (d != EGL_NO_DISPLAY && eglInitialize(d, &major, &minor)) return d;
+
+    auto eglQueryDevicesEXT =
+        (PFNEGLQUERYDEVICESEXTPROC)eglGetProcAddress("eglQueryDevicesEXT");
+    auto eglGetPlatformDisplayEXT =
+        (PFNEGLGETPLATFORMDISPLAYEXTPROC)eglGetProcAddress("eglGetPlatformDisplayEXT");
+    if (!eglQueryDevicesEXT || !eglGetPlatformDisplayEXT) return EGL_NO_DISPLAY;
+    EGLDeviceEXT devs[16]; EGLint nd = 0;
+    if (!eglQueryDevicesEXT(16, devs, &nd)) return EGL_NO_DISPLAY;
+    for (EGLint i = 0; i < nd; ++i) {
+        EGLDisplay c = eglGetPlatformDisplayEXT(EGL_PLATFORM_DEVICE_EXT, devs[i], nullptr);
+        if (c != EGL_NO_DISPLAY && eglInitialize(c, &major, &minor)) {
+            const char* vendor = eglQueryString(c, EGL_VENDOR);
+            if (vendor && std::strstr(vendor, "NVIDIA")) return c;
+            d = c;  // remember a working non-NVIDIA display as last resort
+        }
+    }
+    return d;
+}
 }  // namespace
 
-// PIMPL holds all GL/GLX/CUDA state (kept out of the header so the vendored
+// PIMPL holds all EGL/GL/CUDA state (kept out of the header so the vendored
 // SceneBridge TU never sees GL/CUDA).
 struct Renderer::VulkanState {
-    Display* xdpy = nullptr;
-    GLXContext glctx = nullptr;
-    GLXPbuffer pbuf = 0;
+    EGLDisplay edpy = EGL_NO_DISPLAY;
+    EGLContext ectx = EGL_NO_CONTEXT;
+    EGLSurface esurf = EGL_NO_SURFACE;
 
     uint32_t n = 1;                       // # batch slots (= max(batch_size,1))
     std::vector<GLuint> glTex;            // N color textures we own
@@ -88,31 +120,52 @@ bool Renderer::initialize() {
     if (const char* e = std::getenv("MUJOFIL_WARP_GL_PERFRAME")) v.perFrame = atoi(e) != 0;
     const uint32_t W = config_.width, H = config_.height;
 
-    // --- 1. our GLX context (matches Filament's GLX platform on Linux) ------
-    v.xdpy = XOpenDisplay(nullptr);
-    if (!v.xdpy) throw std::runtime_error("GL renderer: XOpenDisplay failed (need an X display)");
-    int screen = DefaultScreen(v.xdpy);
-    int fbAttr[] = {
-        GLX_DRAWABLE_TYPE, GLX_PBUFFER_BIT, GLX_RENDER_TYPE, GLX_RGBA_BIT,
-        GLX_RED_SIZE, 8, GLX_GREEN_SIZE, 8, GLX_BLUE_SIZE, 8, GLX_ALPHA_SIZE, 8, None
+    // --- 1. our surfaceless EGL desktop-GL context (no X; headless-capable) -
+    // Bind desktop GL (EGL_OPENGL_API) to match Filament's PlatformEGLHeadless,
+    // so our context shares its object namespace with Filament's.
+    const bool dbg = std::getenv("MUJOFIL_WARP_DEBUG") != nullptr;
+    if (dbg) fprintf(stderr, "[gl] opening EGL display...\n");
+    v.edpy = openEglDisplay();
+    if (v.edpy == EGL_NO_DISPLAY)
+        throw std::runtime_error("GL renderer: no usable EGL display (need NVIDIA EGL)");
+    if (dbg) fprintf(stderr, "[gl] EGL display=%p vendor=%s\n", (void*)v.edpy, eglQueryString(v.edpy, EGL_VENDOR));
+    if (!eglBindAPI(EGL_OPENGL_API))
+        throw std::runtime_error("GL renderer: eglBindAPI(EGL_OPENGL_API) failed");
+    const EGLint cfgAttr[] = {
+        EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
+        EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8,
+        EGL_NONE
     };
-    int nfb = 0;
-    GLXFBConfig* fbc = glXChooseFBConfig(v.xdpy, screen, fbAttr, &nfb);
-    if (!fbc || nfb == 0) throw std::runtime_error("GL renderer: glXChooseFBConfig failed");
-    auto glXCreateContextAttribsARB =
-        (PFNGLXCREATECTXATTRIBS)glXGetProcAddressARB((const GLubyte*)"glXCreateContextAttribsARB");
-    if (glXCreateContextAttribsARB) {
-        int ctxAttr[] = { GLX_CONTEXT_MAJOR_VERSION_ARB, 4, GLX_CONTEXT_MINOR_VERSION_ARB, 1, None };
-        v.glctx = glXCreateContextAttribsARB(v.xdpy, fbc[0], nullptr, True, ctxAttr);
+    EGLConfig cfg; EGLint ncfg = 0;
+    if (!eglChooseConfig(v.edpy, cfgAttr, &cfg, 1, &ncfg) || ncfg == 0)
+        throw std::runtime_error("GL renderer: eglChooseConfig failed");
+    const EGLint ctxAttr[] = {
+        EGL_CONTEXT_MAJOR_VERSION, 4, EGL_CONTEXT_MINOR_VERSION, 1, EGL_NONE
+    };
+    // Create the context with EGL_NO_CONFIG_KHR when available so it is
+    // compatible with Filament's own EGL_NO_CONFIG contexts (it creates shared
+    // contexts for its shader-compiler thread pool; a config-bearing context
+    // here would make those shares fail with EGL_BAD_MATCH, breaking shader
+    // linking). The pbuffer SURFACE below still uses a concrete config.
+    EGLConfig ctxCfg = cfg;
+    {
+        const char* exts = eglQueryString(v.edpy, EGL_EXTENSIONS);
+        if (exts && std::strstr(exts, "EGL_KHR_no_config_context"))
+            ctxCfg = (EGLConfig)EGL_NO_CONFIG_KHR;
     }
-    if (!v.glctx) v.glctx = glXCreateNewContext(v.xdpy, fbc[0], GLX_RGBA_TYPE, nullptr, True);
-    if (!v.glctx) throw std::runtime_error("GL renderer: glXCreateContext failed");
-    int pbAttr[] = { GLX_PBUFFER_WIDTH, 16, GLX_PBUFFER_HEIGHT, 16, None };
-    v.pbuf = glXCreatePbuffer(v.xdpy, fbc[0], pbAttr);
-    if (!glXMakeContextCurrent(v.xdpy, v.pbuf, v.pbuf, v.glctx))
-        throw std::runtime_error("GL renderer: glXMakeContextCurrent failed");
+    v.ectx = eglCreateContext(v.edpy, ctxCfg, EGL_NO_CONTEXT, ctxAttr);
+    if (v.ectx == EGL_NO_CONTEXT)
+        throw std::runtime_error("GL renderer: eglCreateContext failed");
+    // A tiny pbuffer surface (more portable than relying on surfaceless support).
+    const EGLint pbAttr[] = { EGL_WIDTH, 16, EGL_HEIGHT, 16, EGL_NONE };
+    v.esurf = eglCreatePbufferSurface(v.edpy, cfg, pbAttr);
+    if (!eglMakeCurrent(v.edpy, v.esurf, v.esurf, v.ectx))
+        throw std::runtime_error("GL renderer: eglMakeCurrent failed");
+    if (dbg) fprintf(stderr, "[gl] ctx current; GL_VERSION=%s\n", (const char*)glGetString(GL_VERSION));
 
     // --- 2. N GL textures we own (Filament renders into them; CUDA reads) ----
+    if (dbg) fprintf(stderr, "[gl] creating %u textures %ux%u...\n", v.n, W, H);
     v.glTex.resize(v.n);
     glGenTextures(v.n, v.glTex.data());
     for (uint32_t i = 0; i < v.n; ++i) {
@@ -124,12 +177,22 @@ bool Renderer::initialize() {
     glBindTexture(GL_TEXTURE_2D, 0);
     glFinish();
 
-    // --- 3. Filament engine sharing OUR GLX context -------------------------
+    // --- 3. Filament engine sharing OUR EGL context -------------------------
+    if (dbg) fprintf(stderr, "[gl] building Filament engine (shared ctx=%p)...\n", (void*)v.ectx);
+    // Force SYNCHRONOUS shader compilation. Filament's parallel shader-compiler
+    // threads don't bind the EGL desktop-GL API per thread (it's per-thread
+    // state), so on the EGL desktop-GL path they fail to create shared contexts
+    // (EGL_BAD_MATCH) and shader linking breaks. Synchronous compile runs on the
+    // main driver thread (which has the API bound) and is a one-time startup cost.
+    Engine::Config ecfg{};
+    ecfg.disableParallelShaderCompile = true;
     engine_ = Engine::Builder()
         .backend(Engine::Backend::OPENGL)
-        .sharedContext((void*)v.glctx)
+        .sharedContext((void*)v.ectx)
+        .config(&ecfg)
         .build();
     if (!engine_) throw std::runtime_error("GL renderer: Filament engine build failed");
+    if (dbg) fprintf(stderr, "[gl] engine built OK\n");
 
     renderer_ = engine_->createRenderer();
     scene_ = engine_->createScene();
@@ -270,7 +333,7 @@ void* Renderer::finish_batch_to_cuda(uint32_t n) {
     const size_t rowBytes = size_t(W) * 4;
     const size_t slice = rowBytes * H;
     auto t0 = clk::now();
-    glXMakeContextCurrent(v.xdpy, v.pbuf, v.pbuf, v.glctx);
+    eglMakeCurrent(v.edpy, v.esurf, v.esurf, v.ectx);
     cudaGraphicsMapResources(n, v.cudaRes.data(), 0);
     for (uint32_t i = 0; i < n; ++i) {
         cudaArray_t arr = nullptr;
@@ -328,13 +391,13 @@ void Renderer::destroy() {
     }
     v.rt.clear(); v.filColor.clear(); v.depth = nullptr;
     if (!v.glTex.empty()) { glDeleteTextures(v.glTex.size(), v.glTex.data()); v.glTex.clear(); }
-    if (v.glctx) {
-        glXMakeContextCurrent(v.xdpy, None, None, nullptr);
-        if (v.pbuf) glXDestroyPbuffer(v.xdpy, v.pbuf);
-        glXDestroyContext(v.xdpy, v.glctx);
-        v.glctx = nullptr;
+    if (v.ectx != EGL_NO_CONTEXT) {
+        eglMakeCurrent(v.edpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+        if (v.esurf != EGL_NO_SURFACE) eglDestroySurface(v.edpy, v.esurf);
+        eglDestroyContext(v.edpy, v.ectx);
+        v.ectx = EGL_NO_CONTEXT;
     }
-    if (v.xdpy) { XCloseDisplay(v.xdpy); v.xdpy = nullptr; }
+    if (v.edpy != EGL_NO_DISPLAY) { eglTerminate(v.edpy); v.edpy = EGL_NO_DISPLAY; }
     initialized_ = false;
 }
 
