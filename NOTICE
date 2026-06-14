@@ -1,0 +1,31 @@
+mujofil-warp
+Copyright 2026 Tau Intelligence
+
+This product includes software developed as part of the mujofil project
+(https://github.com/tau-intelligence/MuJoCo-Filament), licensed under the
+Apache License 2.0. The following files under native/vendor/core/ are vendored
+from mujofil's renderer source and are used UNMODIFIED to bridge MuJoCo geometry
+into Filament:
+
+    native/vendor/core/scene_bridge.h / scene_bridge.cpp
+    native/vendor/core/material_manager.h / material_manager.cpp
+    native/vendor/core/light_manager.h / light_manager.cpp
+
+(native/vendor/core/renderer.h is mujofil-warp's own renderer interface, not
+vendored.)
+
+This product redistributes the following third-party components:
+
+  * Google Filament (https://github.com/google/filament), Apache License 2.0.
+    Prebuilt static libraries are downloaded at build time and statically linked
+    into the native module; the bluevk headers under third_party/bluevk/ are
+    vendored from the Filament source tree (v1.56.3).
+
+  * DLPack (https://github.com/dmlc/dlpack), Apache License 2.0.
+    The single header third_party/dlpack/dlpack.h is vendored unmodified.
+
+  * Compiled Filament materials (mujofil_warp/materials/*.filamat) are produced
+    from mujofil's material sources and bundled as package data.
+
+MuJoCo (https://github.com/google-deepmind/mujoco) is a runtime dependency
+installed via pip; only its public headers are used at build time.

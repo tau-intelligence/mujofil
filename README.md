@@ -129,15 +129,33 @@ MUJOFIL_WARP_BACKEND=gl     python examples/minimal_render.py --preset high
 MUJOFIL_WARP_BACKEND=vulkan python examples/minimal_render.py --preset high
 ```
 
-## Building the native module
-
-The native extension links a prebuilt [Filament](https://github.com/google/filament)
-(1.56.x) and reuses the `mujofil` renderer source. Set `FILAMENT_DIR` to a prebuilt
-Filament release, then:
+## Installation
 
 ```bash
-bash native/build.sh      # Vulkan zero-copy   -> _mujofil_warp
+pip install mujofil-warp
+```
+
+That's it — the package is **self-contained**. Filament is downloaded and
+statically linked at build time, CUDA's runtime is statically linked, and the
+compiled materials ship inside the wheel. The only runtime requirement is an
+**NVIDIA GPU + driver** (plus an X display for the default GL backend; it
+auto-falls back to Vulkan when headless).
+
+Building from source needs **Clang + libc++**, the **CUDA toolkit**, and GL/X11
++ Vulkan dev headers:
+
+```bash
+CC=clang CXX=clang++ pip install .
+```
+
+### Dev rebuilds (no full reinstall)
+
+For iterating on the C++ without a full `pip install`, the two helper scripts
+build the modules in place (point `FILAMENT_DIR` at a prebuilt Filament release):
+
+```bash
 bash native/build_gl.sh   # OpenGL single-sync -> _mujofil_warp_gl
+bash native/build.sh      # Vulkan zero-copy    -> _mujofil_warp
 ```
 
 Requirements: an NVIDIA GPU with CUDA, `clang++`/libc++, the CUDA toolkit headers,

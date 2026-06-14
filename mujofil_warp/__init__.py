@@ -12,20 +12,31 @@ from __future__ import annotations
 import os
 import sys
 
-# Locate the native module (built in ../native by native/build.sh).
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_NATIVE = os.path.normpath(os.path.join(_HERE, os.pardir, "native"))
-if _NATIVE not in sys.path:
-    sys.path.insert(0, _NATIVE)
+__version__ = "0.1.0"
 
-# mujofil's MaterialManager loads compiled .filamat via VF_MUJOCO_MATERIALS_DIR.
+# Locate the native modules. When installed (pip), the compiled
+# _mujofil_warp_gl / _mujofil_warp .so live INSIDE this package directory. In a
+# dev checkout they're built into ../native by native/build*.sh — support both.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+_DEV_NATIVE = os.path.normpath(os.path.join(_HERE, os.pardir, "native"))
+if os.path.isdir(_DEV_NATIVE) and _DEV_NATIVE not in sys.path:
+    sys.path.insert(0, _DEV_NATIVE)
+
+# The vendored MaterialManager loads compiled .filamat via VF_MUJOCO_MATERIALS_DIR.
+# Prefer the materials bundled with this package; fall back to a mujofil install.
 if "VF_MUJOCO_MATERIALS_DIR" not in os.environ:
-    try:
-        import mujofil as _mujofil
-        os.environ["VF_MUJOCO_MATERIALS_DIR"] = os.path.join(
-            os.path.dirname(_mujofil.__file__), "materials")
-    except Exception:  # noqa: BLE001
-        pass
+    _pkg_materials = os.path.join(_HERE, "materials")
+    if os.path.isdir(_pkg_materials):
+        os.environ["VF_MUJOCO_MATERIALS_DIR"] = _pkg_materials
+    else:
+        try:
+            import mujofil as _mujofil
+            os.environ["VF_MUJOCO_MATERIALS_DIR"] = os.path.join(
+                os.path.dirname(_mujofil.__file__), "materials")
+        except Exception:  # noqa: BLE001
+            pass
 
 def _load_native(backend: str | None = None):
     """Select the native backend: 'gl' (default, OpenGL single-sync) or 'vulkan'.

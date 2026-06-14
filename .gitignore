@@ -10,7 +10,6 @@ dist/
 native/obj/
 native/obj_gl/
 native/*.so
-native/vendor/
 
 # Compiled spike binaries (keep the .cpp/.sh sources)
 spikes/**/*.o
@@ -37,3 +36,8 @@ out/
 test_5a.py
 test_5b.py
 test_batch.py
+
+# scikit-build / CMake
+_skbuild/
+wheelhouse/
+*.egg-info/

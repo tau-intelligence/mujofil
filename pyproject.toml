@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=64", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["scikit-build-core>=0.8", "pybind11>=2.11"]
+build-backend = "scikit_build_core.build"
 
 [project]
 name = "mujofil-warp"
@@ -14,6 +14,7 @@ keywords = ["mujoco", "mjwarp", "filament", "pbr", "rendering", "reinforcement-l
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: Apache Software License",
+    "Operating System :: POSIX :: Linux",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Multimedia :: Graphics :: 3D Rendering",
 ]
@@ -31,9 +32,58 @@ examples = ["pillow"]
 [project.urls]
 Homepage = "https://github.com/tau-intelligence/mujofil-warp"
 Repository = "https://github.com/tau-intelligence/mujofil-warp"
+Issues = "https://github.com/tau-intelligence/mujofil-warp/issues"
 
-# NOTE: the native extension (_mujofil_warp / _mujofil_warp_gl) is built by
-# native/build.sh (Vulkan zero-copy) and native/build_gl.sh (OpenGL single-sync),
-# which link a prebuilt Google Filament. See README "Building the native module".
-[tool.setuptools]
-packages = ["mujofil_warp"]
+# ============================================================================
+# scikit-build-core: drive the CMake build. The native modules
+# (_mujofil_warp_gl, _mujofil_warp) + compiled materials install into the
+# mujofil_warp/ package. Filament is auto-downloaded by CMake at build time.
+# ============================================================================
+[tool.scikit-build]
+cmake.build-type = "Release"
+wheel.packages = ["mujofil_warp"]
+sdist.include = [
+    "CMakeLists.txt",
+    "native/render_module.cpp",
+    "native/renderer_gl.cpp",
+    "native/renderer_warp.cpp",
+    "native/vendor/core",
+    "third_party/dlpack",
+    "third_party/bluevk",
+    "third_party/utils_include",
+    "mujofil_warp/materials",
+    "NOTICE",
+]
+sdist.exclude = [
+    "third_party/filament-src",
+    "spikes",
+    "out",
+    ".venv",
+    "**/__pycache__",
+]
+
+[tool.scikit-build.cmake.define]
+# FILAMENT_DIR may be supplied via env or -C to skip the auto-download.
+
+# ============================================================================
+# cibuildwheel: one wheel per CPython 3.10-3.13, manylinux_2_34 (glibc >= 2.30
+# for Filament). Build with Clang + libc++, CUDA toolkit for static cudart.
+# ============================================================================
+[tool.cibuildwheel]
+build = "cp310-* cp311-* cp312-* cp313-*"
+skip = "*-musllinux_* *_i686 pp*"
+build-frontend = "build"
+test-command = "python -c \"import mujofil_warp; print('mujofil-warp ok')\""
+
+[tool.cibuildwheel.linux]
+manylinux-x86_64-image = "quay.io/pypa/manylinux_2_34_x86_64"
+environment = { CC = "clang", CXX = "clang++", FILAMENT_DIR = "/project/_filament" }
+before-all = [
+    "dnf install -y wget tar xz gzip libpng-devel zlib-devel libatomic libX11-devel mesa-libGL-devel clang || yum install -y wget tar xz gzip libpng-devel zlib-devel libatomic libX11-devel mesa-libGL-devel clang",
+    "(wget -q https://developer.download.nvidia.com/compute/cuda/repos/rhel9/x86_64/cuda-rhel9.repo -O /etc/yum.repos.d/cuda.repo && dnf install -y cuda-cudart-static-12-4 cuda-cudart-devel-12-4) || true",
+    "wget -q https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz -O /tmp/llvm.tar.xz",
+    "mkdir -p /tmp/llvm && tar -xf /tmp/llvm.tar.xz -C /tmp/llvm --wildcards '*/libc++.so*' '*/libc++abi.so*' '*/libunwind.so*'",
+    "find /tmp/llvm \\( -name 'libc++.so*' -o -name 'libc++abi.so*' -o -name 'libunwind.so*' \\) -exec cp -P {} /usr/lib64/ \\; && ldconfig",
+    "wget -q https://github.com/google/filament/releases/download/v1.56.3/filament-v1.56.3-linux.tgz -O /tmp/filament.tgz",
+    "mkdir -p /project/_filament && tar -xzf /tmp/filament.tgz -C /project/_filament --strip-components=1",
+]
