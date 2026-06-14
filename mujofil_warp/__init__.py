@@ -28,19 +28,39 @@ if "VF_MUJOCO_MATERIALS_DIR" not in os.environ:
         pass
 
 def _load_native(backend: str | None = None):
-    """Select the native backend: 'vulkan' (default) or 'gl' (OpenGL single-sync).
+    """Select the native backend: 'gl' (default, OpenGL single-sync) or 'vulkan'.
 
     The GL backend (`_mujofil_warp_gl`) renders N worlds into N GL textures with a
     single flushAndWait (true single-sync) and exports them to CUDA via GL interop;
-    it requires an X display (DISPLAY set). The Vulkan backend uses a shared device
-    + exportable swapchain. Override with MUJOFIL_WARP_BACKEND=gl|vulkan.
+    it is the fastest path but requires an X display (DISPLAY set). The Vulkan
+    backend (`_mujofil_warp`) uses a shared device + exportable swapchain and works
+    headless (no X). Override with MUJOFIL_WARP_BACKEND=gl|vulkan.
+
+    Default is 'gl'. If 'gl' is requested implicitly (no explicit override) but no
+    X display is available or the GL module isn't built, we fall back to Vulkan.
     """
-    backend = (backend or os.environ.get("MUJOFIL_WARP_BACKEND", "vulkan")).lower()
+    explicit = backend is not None or "MUJOFIL_WARP_BACKEND" in os.environ
+    backend = (backend or os.environ.get("MUJOFIL_WARP_BACKEND", "gl")).lower()
+
+    if backend in ("vulkan", "vk"):
+        import _mujofil_warp as _vk  # noqa: E402
+        return _vk
+
+    # GL path (default). Fall back to Vulkan only when GL wasn't explicitly asked
+    # for and the environment can't support it (headless / module missing).
     if backend in ("gl", "opengl"):
-        import _mujofil_warp_gl as _gl  # noqa: E402
-        return _gl
-    import _mujofil_warp as _vk  # noqa: E402
-    return _vk
+        try:
+            if not os.environ.get("DISPLAY"):
+                raise RuntimeError("no X display (DISPLAY unset)")
+            import _mujofil_warp_gl as _gl  # noqa: E402
+            return _gl
+        except Exception:
+            if explicit:
+                raise
+            import _mujofil_warp as _vk  # noqa: E402
+            return _vk
+
+    raise ValueError(f"unknown MUJOFIL_WARP_BACKEND={backend!r} (use 'gl' or 'vulkan')")
 
 
 _native = _load_native()

@@ -5,15 +5,15 @@ fidelity-vs-throughput trends from ``benchmarks/`` on your own hardware.
 
 Run::
 
-    # full photoreal PBR (SSAO on)
-    MUJOFIL_WARP_BACKEND=gl python examples/minimal_render.py --preset high
+    # full photoreal PBR (SSAO on) -- uses the default GL backend
+    python examples/minimal_render.py --preset high
 
     # ~2x faster (SSAO off) -- the single biggest throughput lever
-    MUJOFIL_WARP_BACKEND=gl python examples/minimal_render.py --preset fast
+    python examples/minimal_render.py --preset fast
 
-The GL backend (MUJOFIL_WARP_BACKEND=gl) does a true single-sync batch and needs
-an X display. The default Vulkan backend uses a shared device + exportable
-swapchain. Both deliver frames as zero-copy torch.cuda tensors.
+The default GL backend does a true single-sync batch and needs an X display
+(it auto-falls back to Vulkan when none is available). Force a backend with
+MUJOFIL_WARP_BACKEND=gl|vulkan. Both deliver frames as zero-copy torch.cuda tensors.
 """
 from __future__ import annotations
 

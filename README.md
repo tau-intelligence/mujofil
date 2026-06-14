@@ -115,15 +115,18 @@ r = WarpRenderer(config=cfg)
 
 Select at runtime with `MUJOFIL_WARP_BACKEND`:
 
-- **`gl`** — OpenGL single-sync. Renders N worlds into N imported GL textures
-  bracketed by one `flushAndWait`, then exports via GL↔CUDA interop. Sync cost is
-  constant in N; **fastest in the warehouse.** Requires an X display (`DISPLAY`).
-- **`vulkan`** (default) — shared Vulkan device + exportable swapchain + CUDA
-  external-memory import. Works headless (no X), but the 2-frame in-flight cap
-  makes its sync cost grow with batch size.
+- **`gl`** (default) — OpenGL single-sync. Renders N worlds into N imported GL
+  textures bracketed by one `flushAndWait`, then exports via GL↔CUDA interop. Sync
+  cost is constant in N; **fastest in the warehouse.** Requires an X display
+  (`DISPLAY`); when none is available it automatically falls back to Vulkan.
+- **`vulkan`** — shared Vulkan device + exportable swapchain + CUDA external-memory
+  import. Works fully headless (no X), but the 2-frame in-flight cap makes its sync
+  cost grow with batch size.
 
 ```bash
-MUJOFIL_WARP_BACKEND=gl python examples/minimal_render.py --preset high
+# default is gl; force a backend explicitly with the env var:
+MUJOFIL_WARP_BACKEND=gl     python examples/minimal_render.py --preset high
+MUJOFIL_WARP_BACKEND=vulkan python examples/minimal_render.py --preset high
 ```
 
 ## Building the native module
