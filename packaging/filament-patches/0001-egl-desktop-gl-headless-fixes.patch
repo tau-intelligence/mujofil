@@ -1,0 +1,58 @@
+diff --git a/filament/backend/src/opengl/platforms/PlatformEGL.cpp b/filament/backend/src/opengl/platforms/PlatformEGL.cpp
+index 38b8b9d..3f08d31 100644
+--- a/filament/backend/src/opengl/platforms/PlatformEGL.cpp
++++ b/filament/backend/src/opengl/platforms/PlatformEGL.cpp
+@@ -400,6 +400,13 @@ EGLConfig PlatformEGL::findSwapChainConfig(uint64_t flags, bool window, bool pbu
+                 configAttribs[EGL_RENDERABLE_TYPE] |= EGL_OPENGL_ES3_BIT_KHR;
+             }
+         }
++    } else if (isOpenGL()) {
++        // Even with EGL_KHR_no_config_context (so the CONTEXT needs no config),
++        // the SURFACE (pbuffer/window) we create still needs a config whose
++        // EGL_RENDERABLE_TYPE matches the bound API. EGL defaults this attribute
++        // to EGL_OPENGL_ES_BIT, so on a desktop-GL (EGL_OPENGL_API) display the
++        // search would find no usable config. Request EGL_OPENGL_BIT explicitly.
++        configAttribs[EGL_RENDERABLE_TYPE] = EGL_OPENGL_BIT;
+     }
+ 
+     if (window) {
+@@ -525,7 +532,11 @@ Platform::SwapChain* PlatformEGL::createSwapChain(
+ 
+     EGLConfig config = EGL_NO_CONFIG_KHR;
+     if (UTILS_LIKELY(ext.egl.KHR_no_config_context)) {
+-        config = findSwapChainConfig(flags, true, false);
++        // This is a headless (pbuffer) swap chain, so request a PBUFFER-capable
++        // config, not a window one. On a headless EGL display (e.g. EGL device
++        // platform, no X) there are no window configs, so requesting window=true
++        // here would find nothing and the pbuffer surface could not be created.
++        config = findSwapChainConfig(flags, false, true);
+     } else {
+         config = mEGLConfig;
+     }
+@@ -729,10 +740,24 @@ bool PlatformEGL::setExternalImage(void* externalImage,
+ // -----------------------------------------------------------------------------------------------
+ 
+ void PlatformEGL::initializeGlExtensions() noexcept {
+-    // We're guaranteed to be on an ES platform, since we're using EGL
+     GLUtils::unordered_string_set glExtensions;
++    // On an ES context (or a desktop GL compatibility context) the legacy
++    // GL_EXTENSIONS string is available. On a desktop GL CORE context (which the
++    // EGL-on-Linux desktop path produces) glGetString(GL_EXTENSIONS) returns
++    // nullptr and we must enumerate via glGetStringi/GL_NUM_EXTENSIONS instead.
+     const char* const extensions = (const char*)glGetString(GL_EXTENSIONS);
+-    glExtensions = GLUtils::split(extensions);
++    if (extensions) {
++        glExtensions = GLUtils::split(extensions);
++    } else {
++        GLint n = 0;
++        glGetIntegerv(GL_NUM_EXTENSIONS, &n);
++        for (GLint i = 0; i < n; ++i) {
++            const char* const e = (const char*)glGetStringi(GL_EXTENSIONS, (GLuint)i);
++            if (e) {
++                glExtensions.insert(e);
++            }
++        }
++    }
+     ext.gl.OES_EGL_image_external_essl3 = glExtensions.has("GL_OES_EGL_image_external_essl3");
+ }
+ 

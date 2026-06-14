@@ -25,7 +25,13 @@ add_link_options(-stdlib=libc++)
 
 # ============================================================================
 # Filament — prebuilt static libs, auto-downloaded if FILAMENT_DIR isn't given.
-# Static libs are baked into the module; nothing to ship separately.
+# ============================================================================
+# Filament — a CUSTOM EGL-enabled build (Google's prebuilt Linux Filament is
+# GLX-only and cannot render headless). We build it from source with our EGL
+# desktop-GL patches via packaging/build_filament_egl.sh. One build serves both
+# the GL (surfaceless EGL) and Vulkan backends. Static libs are baked into the
+# modules; nothing to ship separately. Set FILAMENT_DIR to reuse an existing
+# build and skip the (slow) source build.
 # ============================================================================
 set(FILAMENT_VERSION "1.56.3")
 if(NOT FILAMENT_DIR)
@@ -35,26 +41,15 @@ if(NOT FILAMENT_DIR)
     if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
         message(FATAL_ERROR "mujofil-warp currently supports Linux only.")
     endif()
-    set(FILAMENT_DIR "${CMAKE_BINARY_DIR}/_filament")
+    set(FILAMENT_DIR "${CMAKE_BINARY_DIR}/_filament_egl")
     if(NOT EXISTS "${FILAMENT_DIR}/include")
-        set(_fil_url "https://github.com/google/filament/releases/download/v${FILAMENT_VERSION}/filament-v${FILAMENT_VERSION}-linux.tgz")
-        message(STATUS "FILAMENT_DIR not set — downloading Filament v${FILAMENT_VERSION}...")
-        file(MAKE_DIRECTORY "${FILAMENT_DIR}")
-        file(DOWNLOAD "${_fil_url}" "${CMAKE_BINARY_DIR}/filament.tgz" SHOW_PROGRESS STATUS _dl)
-        list(GET _dl 0 _dl_rc)
-        if(NOT _dl_rc EQUAL 0)
-            message(FATAL_ERROR "Failed to download Filament from ${_fil_url} (${_dl}).")
-        endif()
+        message(STATUS "FILAMENT_DIR not set — building custom EGL Filament v${FILAMENT_VERSION} from source (this is slow; set FILAMENT_DIR to reuse a build)...")
         execute_process(
-            COMMAND ${CMAKE_COMMAND} -E tar xzf "${CMAKE_BINARY_DIR}/filament.tgz"
-            WORKING_DIRECTORY "${FILAMENT_DIR}")
-        # The tarball extracts into a 'filament/' subdir — flatten it.
-        if(EXISTS "${FILAMENT_DIR}/filament/include")
-            file(GLOB _fil_children "${FILAMENT_DIR}/filament/*")
-            foreach(_c ${_fil_children})
-                get_filename_component(_n "${_c}" NAME)
-                file(RENAME "${_c}" "${FILAMENT_DIR}/${_n}")
-            endforeach()
+            COMMAND bash "${CMAKE_SOURCE_DIR}/packaging/build_filament_egl.sh" "${FILAMENT_DIR}"
+            RESULT_VARIABLE _fil_rc)
+        if(NOT _fil_rc EQUAL 0)
+            message(FATAL_ERROR "Custom EGL Filament build failed (rc=${_fil_rc}). "
+                "See packaging/build_filament_egl.sh; it needs git, clang, libc++ dev, cmake, ninja.")
         endif()
     endif()
 endif()
@@ -158,9 +153,9 @@ function(add_warp_backend tgt module_name renderer_src extra_inc extra_libs)
     install(TARGETS ${tgt} DESTINATION mujofil_warp)
 endfunction()
 
-# OpenGL single-sync backend (default) — needs GL + X11.
+# OpenGL single-sync backend (default) — headless via surfaceless EGL (no X).
 add_warp_backend(_mujofil_warp_gl _mujofil_warp_gl
-    native/renderer_gl.cpp "" "GL;X11")
+    native/renderer_gl.cpp "" "GL;EGL")
 
 # Vulkan shared-device backend — needs vendored bluevk + utils source headers;
 # links bluegl/bluevk (already in FILAMENT_LIBS), no external -lvulkan (bluevk
