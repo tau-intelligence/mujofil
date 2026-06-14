@@ -167,7 +167,11 @@ private:
 
 }  // namespace
 
-PYBIND11_MODULE(_mujofil_warp, m) {
+#ifndef MUJOFIL_WARP_MODULE
+#define MUJOFIL_WARP_MODULE _mujofil_warp
+#endif
+
+PYBIND11_MODULE(MUJOFIL_WARP_MODULE, m) {
     m.doc() = "mujofil-warp native: Filament PBR render of MuJoCo -> torch CUDA (zero-copy)";
 
     py::class_<RendererConfig>(m, "RendererConfig")

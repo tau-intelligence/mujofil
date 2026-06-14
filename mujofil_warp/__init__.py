@@ -27,8 +27,23 @@ if "VF_MUJOCO_MATERIALS_DIR" not in os.environ:
     except Exception:  # noqa: BLE001
         pass
 
-import _mujofil_warp as _native  # noqa: E402
+def _load_native(backend: str | None = None):
+    """Select the native backend: 'vulkan' (default) or 'gl' (OpenGL single-sync).
 
+    The GL backend (`_mujofil_warp_gl`) renders N worlds into N GL textures with a
+    single flushAndWait (true single-sync) and exports them to CUDA via GL interop;
+    it requires an X display (DISPLAY set). The Vulkan backend uses a shared device
+    + exportable swapchain. Override with MUJOFIL_WARP_BACKEND=gl|vulkan.
+    """
+    backend = (backend or os.environ.get("MUJOFIL_WARP_BACKEND", "vulkan")).lower()
+    if backend in ("gl", "opengl"):
+        import _mujofil_warp_gl as _gl  # noqa: E402
+        return _gl
+    import _mujofil_warp as _vk  # noqa: E402
+    return _vk
+
+
+_native = _load_native()
 RendererConfig = _native.RendererConfig
 
 
