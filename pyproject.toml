@@ -66,24 +66,41 @@ sdist.exclude = [
 # FILAMENT_DIR may be supplied via env or -C to skip the auto-download.
 
 # ============================================================================
-# cibuildwheel: one wheel per CPython 3.10-3.13, manylinux_2_34 (glibc >= 2.30
-# for Filament). Build with Clang + libc++, CUDA toolkit for static cudart.
+# cibuildwheel: one wheel per CPython 3.10-3.13, manylinux_2_34 (AlmaLinux 9,
+# glibc 2.34 -- the floor imposed by Filament 1.56.3's prebuilt libs). Built with
+# Clang + libc++. We have NO CUDA device code, so a single wheel built against a
+# STATIC CUDA 12.0 cudart runs on ANY NVIDIA GPU with driver >= R525.
 # ============================================================================
 [tool.cibuildwheel]
 build = "cp310-* cp311-* cp312-* cp313-*"
 skip = "*-musllinux_* *_i686 pp*"
 build-frontend = "build"
-test-command = "python -c \"import mujofil_warp; print('mujofil-warp ok')\""
+# Import-only smoke test (no GPU/X in CI): loads the .so, exercises backend
+# selection (falls back to the Vulkan module when DISPLAY is unset). No device
+# init happens at import, so this is safe on a GPU-less runner.
+test-command = "python -c \"import mujofil_warp; print('mujofil-warp', mujofil_warp.__version__)\""
 
 [tool.cibuildwheel.linux]
 manylinux-x86_64-image = "quay.io/pypa/manylinux_2_34_x86_64"
-environment = { CC = "clang", CXX = "clang++", FILAMENT_DIR = "/project/_filament" }
+environment = { CC = "clang", CXX = "clang++", FILAMENT_DIR = "/project/_filament", CUDAToolkit_ROOT = "/usr/local/cuda-12.0" }
 before-all = [
-    "dnf install -y wget tar xz gzip libpng-devel zlib-devel libatomic libX11-devel mesa-libGL-devel clang || yum install -y wget tar xz gzip libpng-devel zlib-devel libatomic libX11-devel mesa-libGL-devel clang",
-    "(wget -q https://developer.download.nvidia.com/compute/cuda/repos/rhel9/x86_64/cuda-rhel9.repo -O /etc/yum.repos.d/cuda.repo && dnf install -y cuda-cudart-static-12-4 cuda-cudart-devel-12-4) || true",
+    # Build deps: GL/GLX + X11 + EGL headers, clang, common libs.
+    "dnf install -y wget tar xz gzip clang libatomic libpng-devel zlib-devel libX11-devel libglvnd-devel mesa-libGL-devel mesa-libEGL-devel || yum install -y wget tar xz gzip clang libatomic libpng-devel zlib-devel libX11-devel libglvnd-devel mesa-libGL-devel mesa-libEGL-devel",
+    # CUDA 12.0 headers + STATIC cudart (no device code -> wide driver coverage).
+    "wget -q https://developer.download.nvidia.com/compute/cuda/repos/rhel9/x86_64/cuda-rhel9.repo -O /etc/yum.repos.d/cuda.repo",
+    "dnf install -y cuda-cudart-static-12-0 cuda-cudart-devel-12-0 cuda-driver-devel-12-0 || yum install -y cuda-cudart-static-12-0 cuda-cudart-devel-12-0 cuda-driver-devel-12-0",
+    # libc++ runtime (Filament is built with libc++) -> bundled into the wheel by
+    # auditwheel. Fetched from the LLVM release (needs only glibc 2.17).
     "wget -q https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz -O /tmp/llvm.tar.xz",
     "mkdir -p /tmp/llvm && tar -xf /tmp/llvm.tar.xz -C /tmp/llvm --wildcards '*/libc++.so*' '*/libc++abi.so*' '*/libunwind.so*'",
     "find /tmp/llvm \\( -name 'libc++.so*' -o -name 'libc++abi.so*' -o -name 'libunwind.so*' \\) -exec cp -P {} /usr/lib64/ \\; && ldconfig",
+    # Prebuilt Filament (auto-download is skipped because FILAMENT_DIR is set).
     "wget -q https://github.com/google/filament/releases/download/v1.56.3/filament-v1.56.3-linux.tgz -O /tmp/filament.tgz",
     "mkdir -p /project/_filament && tar -xzf /tmp/filament.tgz -C /project/_filament --strip-components=1",
 ]
+# auditwheel bundles libc++/libc++abi/libunwind, but MUST NOT bundle the driver,
+# GL, X11, EGL or Vulkan libs -- those are provided by the user's system/driver
+# at runtime (bundling the build container's MESA software-GL would break NVIDIA
+# acceleration). Exclude them so they resolve from the host.
+repair-wheel-command = "auditwheel repair --exclude libcuda.so.1 --exclude libcudart.so.12 --exclude libGL.so.1 --exclude libGLX.so.0 --exclude libGLdispatch.so.0 --exclude libEGL.so.1 --exclude libX11.so.6 --exclude libvulkan.so.1 -w {dest_dir} {wheel}"
+

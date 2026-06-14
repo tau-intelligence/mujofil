@@ -135,14 +135,48 @@ MUJOFIL_WARP_BACKEND=vulkan python examples/minimal_render.py --preset high
 pip install mujofil-warp
 ```
 
-That's it — the package is **self-contained**. Filament is downloaded and
-statically linked at build time, CUDA's runtime is statically linked, and the
-compiled materials ship inside the wheel. The only runtime requirement is an
-**NVIDIA GPU + driver** (plus an X display for the default GL backend; it
-auto-falls back to Vulkan when headless).
+The wheel is **self-contained**: Filament and the CUDA runtime are statically
+baked in, the compiled materials ship inside it, and `libc++` is bundled. There
+is **no CUDA toolkit, no Filament, and no `mujofil` to install** — the only hard
+requirement at runtime is an **NVIDIA GPU + driver**.
 
-Building from source needs **Clang + libc++**, the **CUDA toolkit**, and GL/X11
-+ Vulkan dev headers:
+### Supported environments
+
+Because the package contains **no CUDA device code** (only host-side runtime
+calls), a single wheel is portable across GPUs and driver versions:
+
+| Dimension | Support |
+|---|---|
+| GPU | Any NVIDIA GPU (Turing / Ampere / Ada / Hopper / …) — no compute-capability lock-in |
+| Driver / CUDA | NVIDIA driver **≥ R525** (CUDA 12.0+). One wheel, all newer drivers |
+| OS | Linux **x86_64**, glibc ≥ 2.34 (Ubuntu 22.04+, Debian 12+, RHEL/Alma/Rocky 9+, Fedora 35+) |
+| Python | CPython 3.10 – 3.13 |
+
+Not yet supported: aarch64 (Jetson/Grace), glibc < 2.34 (Ubuntu 20.04 / RHEL 8),
+non-NVIDIA GPUs. These need a from-source Filament build (planned).
+
+### Headless / display
+
+- **Desktop or any host with an X server** → the default **GL** backend works
+  out of the box at full speed.
+- **Headless servers (no X)** → GL auto-falls back to the **Vulkan** backend,
+  which needs the Vulkan loader present. On most distros that's one package:
+
+  ```bash
+  sudo apt-get install -y libvulkan1     # Debian/Ubuntu
+  sudo dnf install -y vulkan-loader      # RHEL/Fedora
+  ```
+
+  (The NVIDIA driver already provides the Vulkan ICD; this just adds the loader.)
+
+> A zero-extra-dependency **headless GL** path (EGL surfaceless, no X and no
+> Vulkan loader) is planned for v0.2 via a from-source Filament build.
+
+### Building from source
+
+Needs **Clang + libc++**, the **CUDA toolkit**, and GL/X11 + EGL dev headers.
+`pip install .` from a checkout (or from the sdist) auto-downloads Filament and
+builds both backends:
 
 ```bash
 CC=clang CXX=clang++ pip install .
