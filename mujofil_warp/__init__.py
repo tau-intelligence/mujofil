@@ -47,21 +47,101 @@ _native = _load_native()
 RendererConfig = _native.RendererConfig
 
 
+def make_config(
+    *,
+    width: int = 256,
+    height: int = 256,
+    batch_size: int = 1,
+    # --- quality toggles: turn OFF to trade fidelity for throughput ---
+    ssao: bool = True,
+    shadows: bool = True,
+    msaa: bool = True,
+    msaa_samples: int = 4,
+    bloom: bool = False,
+    fxaa: bool = False,
+    # --- tone mapping / exposure ---
+    exposure: float = 1.0,
+    tone_mapping: bool = True,
+    dithering: bool = True,
+) -> "RendererConfig":
+    """Build a :class:`RendererConfig` from clear keyword toggles.
+
+    Quality toggles (each can be flipped independently to reproduce the
+    fidelity/throughput trade-offs in ``benchmarks/``):
+
+    - ``ssao``          screen-space ambient occlusion. **Biggest single cost** --
+                        disabling it is ~2x faster (see the ``fast`` preset).
+    - ``shadows``       soft shadow maps.
+    - ``msaa`` / ``msaa_samples``  multi-sample anti-aliasing (2/4/8).
+    - ``bloom``         HDR bloom (off by default; cheap-ish).
+    - ``fxaa``          fast approximate AA (alternative to MSAA).
+    - ``exposure``      linear exposure multiplier before tone mapping.
+    - ``tone_mapping``  FILMIC tone mapping (vs LINEAR when False).
+    - ``dithering``     temporal dithering to avoid banding.
+
+    ``batch_size`` must be >= the number of worlds passed to ``render_batch``.
+    """
+    cfg = RendererConfig()
+    cfg.width = width
+    cfg.height = height
+    cfg.batch_size = batch_size
+    cfg.enable_ssao = ssao
+    cfg.enable_shadows = shadows
+    cfg.enable_msaa = msaa
+    cfg.msaa_samples = msaa_samples
+    cfg.enable_bloom = bloom
+    cfg.enable_fxaa = fxaa
+    cfg.exposure = exposure
+    cfg.tone_mapping = tone_mapping
+    cfg.dithering = dithering
+    return cfg
+
+
+# Named quality presets so users can reproduce our benchmark trends on their own
+# hardware. ``high`` = full photoreal PBR; ``fast`` = SSAO off (~2x throughput);
+# ``ultra`` = + bloom & 8x MSAA. Pass to ``WarpRenderer(preset=...)``.
+QUALITY_PRESETS = {
+    "high": dict(ssao=True, shadows=True, msaa=True, msaa_samples=4),
+    "fast": dict(ssao=False, shadows=True, msaa=True, msaa_samples=4),
+    "ultra": dict(ssao=True, shadows=True, msaa=True, msaa_samples=8, bloom=True),
+    "raw": dict(ssao=False, shadows=False, msaa=False),
+}
+
+
 class WarpRenderer:
     """PBR renderer that returns frames as torch CUDA tensors (zero-copy).
 
-    Example
-    -------
-        cfg = RendererConfig(); cfg.width = cfg.height = 256
-        r = WarpRenderer(cfg)
-        r.load_model(model.address)        # mujoco.MjModel
-        r.sync_transforms(model, data)
+    Construct it three ways::
+
+        # 1. keyword toggles (recommended)
+        r = WarpRenderer(width=256, height=256, batch_size=32, ssao=False)
+
+        # 2. a named quality preset ("high" | "fast" | "ultra" | "raw")
+        r = WarpRenderer(width=256, batch_size=32, preset="fast")
+
+        # 3. an explicit RendererConfig
+        r = WarpRenderer(config=make_config(width=256, ssao=True))
+
+    Then::
+
+        r.load_model(model)                # mujoco.MjModel
         r.sync_camera(model, data, cam_id=0)
         img = r.render()                   # (H, W, 4) uint8 torch.cuda tensor
+
+    Quality toggles (``ssao``, ``shadows``, ``msaa``, ``bloom``, ``fxaa``,
+    ``exposure``, ``tone_mapping``, ``dithering``) are documented on
+    :func:`make_config`. ``ssao`` is the biggest throughput lever (~2x off).
     """
 
-    def __init__(self, config: RendererConfig | None = None):
-        self._r = _native.WarpRenderer(config or RendererConfig())
+    def __init__(self, config: "RendererConfig | None" = None,
+                 *, preset: str | None = None, **toggles):
+        if config is None:
+            kw = dict(QUALITY_PRESETS[preset]) if preset else {}
+            kw.update(toggles)
+            config = make_config(**kw)
+        elif preset or toggles:
+            raise TypeError("pass either `config=` or keyword toggles/`preset=`, not both")
+        self._r = _native.WarpRenderer(config)
 
     # --- scene ---
     def load_model(self, model):
@@ -144,4 +224,4 @@ def _addr(obj) -> int:
     raise TypeError(f"expected mujoco struct or int address, got {type(obj)}")
 
 
-__all__ = ["WarpRenderer", "RendererConfig"]
+__all__ = ["WarpRenderer", "RendererConfig", "make_config", "QUALITY_PRESETS"]

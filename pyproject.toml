@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mujofil-warp"
+version = "0.1.0"
+description = "Photoreal Filament PBR rendering for GPU-resident MuJoCo (MJWarp), zero-copy to PyTorch"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Tau Intelligence" }]
+keywords = ["mujoco", "mjwarp", "filament", "pbr", "rendering", "reinforcement-learning", "sim-to-real"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Apache Software License",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Multimedia :: Graphics :: 3D Rendering",
+]
+dependencies = [
+    "mujoco>=3.2",
+    "mujoco-warp",
+    "warp-lang",
+    "numpy",
+]
+
+[project.optional-dependencies]
+torch = ["torch>=2.4"]
+examples = ["pillow"]
+
+[project.urls]
+Homepage = "https://github.com/tau-intelligence/mujofil-warp"
+Repository = "https://github.com/tau-intelligence/mujofil-warp"
+
+# NOTE: the native extension (_mujofil_warp / _mujofil_warp_gl) is built by
+# native/build.sh (Vulkan zero-copy) and native/build_gl.sh (OpenGL single-sync),
+# which link a prebuilt Google Filament. See README "Building the native module".
+[tool.setuptools]
+packages = ["mujofil_warp"]

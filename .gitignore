@@ -2,29 +2,38 @@
 .venv/
 __pycache__/
 *.pyc
+*.egg-info/
+build/
+dist/
 
-# Outputs
-out/
-!assets/ibl/
-*.png
-*.mp4
+# Native build artifacts
+native/obj/
+native/obj_gl/
+native/*.so
+native/vendor/
 
-# Warp kernel cache (local)
-.warp_cache/
-
-# Spike binaries
-spikes/**/vk_cuda_interop
+# Compiled spike binaries (keep the .cpp/.sh sources)
 spikes/**/*.o
-third_party/filament-src/
-
-# Filament binary
-spikes/filament_vk_export/build/
 spikes/dlpack_torch/*.so
 spikes/dlpack_torch/include/
-native/*.so
+spikes/filament_vk_export/build/
+spikes/gl_cuda_interop/gl_cuda_interop
+spikes/vk_cuda_interop/vk_cuda_interop
+spikes/filament_gl_export/filament_gl_export
+
+# Vendored Filament source headers (sparse checkout, re-fetchable)
+third_party/filament-src/
+
+# Warp kernel cache
+.warp_cache/
+
+# Outputs (renders, videos) -- but keep bundled IBL assets
+out/
+*.png
+*.mp4
+!assets/ibl/**
+
+# Local dev scaffolding
 test_5a.py
-native/obj/
-native/vendor/
 test_5b.py
 test_batch.py
-out/
