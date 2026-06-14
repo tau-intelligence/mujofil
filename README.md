@@ -172,15 +172,46 @@ GL auto-falls back to Vulkan only if the GL module fails to initialize.
 
 ### Building from source
 
-Needs **Clang + libc++**, the **CUDA toolkit**, and GL + EGL dev headers.
-`pip install .` from a checkout (or from the sdist) builds both backends.
+Most users never need this — `pip install mujofil-warp` ships prebuilt wheels.
+Build from source only to hack on the C++ or target an unsupported environment.
 
-> The GL backend's headless EGL rendering requires a **custom EGL-enabled Filament
-> build** (Google's prebuilt Linux Filament is GLX-only). The build fetches a
-> patched Filament artifact automatically; see `CMakeLists.txt`.
+**Prerequisites** (the native modules and Filament are built with Clang + libc++):
+
+| Tool | Debian/Ubuntu | RHEL/Fedora/Alma |
+|---|---|---|
+| Clang + libc++ dev | `clang libc++-dev libc++abi-dev` | `clang` + libc++ (LLVM release) |
+| CUDA toolkit (headers + static cudart) | `nvidia-cuda-toolkit` | `cuda-cudart-devel-12-x cuda-driver-devel-12-x` |
+| EGL / GL dev headers | `libegl1-mesa-dev libgl1-mesa-dev` | `mesa-libEGL-devel mesa-libGL-devel` |
+| Build tools (source-built Filament only) | `git cmake ninja-build` | `git cmake ninja-build` |
+
+Then:
 
 ```bash
+git clone https://github.com/tau-intelligence/mujofil-warp
+cd mujofil-warp
 CC=clang CXX=clang++ pip install .
+```
+
+**How Filament is resolved** (the GL backend's headless EGL rendering needs a
+**custom EGL-enabled Filament** — Google's prebuilt Linux Filament is GLX-only).
+`CMakeLists.txt` tries, in order:
+
+1. **`FILAMENT_DIR=/path/to/egl-filament`** if you set it — used as-is (fastest).
+2. **Download** a prebuilt EGL Filament artifact (seconds). The default path.
+3. **Build from source** via `packaging/build_filament_egl.sh` (~20–30 min) if
+   the download is unavailable — this is the step that needs git/cmake/ninja.
+
+So a plain `pip install .` is **one command**; supply `FILAMENT_DIR` to skip the
+download/build entirely:
+
+```bash
+CC=clang CXX=clang++ FILAMENT_DIR=/path/to/egl-filament pip install .
+```
+
+The EGL Filament artifact is reproducible from source:
+
+```bash
+packaging/build_filament_egl.sh ./_filament_egl   # clone + patch + build
 ```
 
 ### Dev rebuilds (no full reinstall)
@@ -192,9 +223,6 @@ build the modules in place (point `FILAMENT_DIR` at the EGL Filament build):
 bash native/build_gl.sh   # OpenGL single-sync, headless EGL -> _mujofil_warp_gl
 bash native/build.sh      # Vulkan zero-copy                  -> _mujofil_warp
 ```
-
-Requirements: an NVIDIA GPU with CUDA, `clang++`/libc++, the CUDA toolkit headers,
-and EGL/GL dev headers.
 
 ## Architecture & porting
 

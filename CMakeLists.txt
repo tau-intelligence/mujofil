@@ -27,13 +27,19 @@ add_link_options(-stdlib=libc++)
 # Filament — prebuilt static libs, auto-downloaded if FILAMENT_DIR isn't given.
 # ============================================================================
 # Filament — a CUSTOM EGL-enabled build (Google's prebuilt Linux Filament is
-# GLX-only and cannot render headless). We build it from source with our EGL
-# desktop-GL patches via packaging/build_filament_egl.sh. One build serves both
-# the GL (surfaceless EGL) and Vulkan backends. Static libs are baked into the
-# modules; nothing to ship separately. Set FILAMENT_DIR to reuse an existing
-# build and skip the (slow) source build.
+# GLX-only and cannot render headless). One build serves both the GL (surfaceless
+# EGL) and Vulkan backends; its static libs are baked into the modules.
+# Resolution order:
+#   1. FILAMENT_DIR (env or -D) -> use as-is (fastest; CI sets this).
+#   2. Download a prebuilt EGL Filament artifact (built from the same source +
+#      patches via packaging/build_filament_egl.sh, hosted as a release asset).
+#   3. Build it from source (slow ~20-30 min; needs clang/libc++/cmake/ninja).
 # ============================================================================
 set(FILAMENT_VERSION "1.56.3")
+# Prebuilt EGL Filament artifact (overridable). Empty disables the download step.
+set(MUJOFIL_WARP_FILAMENT_URL
+    "https://github.com/tau-intelligence/mujofil-warp/releases/download/filament-egl-v${FILAMENT_VERSION}/filament-egl-v${FILAMENT_VERSION}-linux-x86_64.tgz"
+    CACHE STRING "URL of the prebuilt EGL-enabled Filament artifact")
 if(NOT FILAMENT_DIR)
     set(FILAMENT_DIR "$ENV{FILAMENT_DIR}")
 endif()
@@ -43,13 +49,43 @@ if(NOT FILAMENT_DIR)
     endif()
     set(FILAMENT_DIR "${CMAKE_BINARY_DIR}/_filament_egl")
     if(NOT EXISTS "${FILAMENT_DIR}/include")
-        message(STATUS "FILAMENT_DIR not set — building custom EGL Filament v${FILAMENT_VERSION} from source (this is slow; set FILAMENT_DIR to reuse a build)...")
-        execute_process(
-            COMMAND bash "${CMAKE_SOURCE_DIR}/packaging/build_filament_egl.sh" "${FILAMENT_DIR}"
-            RESULT_VARIABLE _fil_rc)
-        if(NOT _fil_rc EQUAL 0)
-            message(FATAL_ERROR "Custom EGL Filament build failed (rc=${_fil_rc}). "
-                "See packaging/build_filament_egl.sh; it needs git, clang, libc++ dev, cmake, ninja.")
+        set(_got_filament FALSE)
+        # 2. Try the prebuilt artifact first (fast path).
+        if(MUJOFIL_WARP_FILAMENT_URL)
+            message(STATUS "Downloading prebuilt EGL Filament: ${MUJOFIL_WARP_FILAMENT_URL}")
+            file(DOWNLOAD "${MUJOFIL_WARP_FILAMENT_URL}" "${CMAKE_BINARY_DIR}/filament-egl.tgz"
+                STATUS _dl_status)
+            list(GET _dl_status 0 _dl_rc)
+            if(_dl_rc EQUAL 0)
+                file(MAKE_DIRECTORY "${FILAMENT_DIR}")
+                execute_process(
+                    COMMAND ${CMAKE_COMMAND} -E tar xzf "${CMAKE_BINARY_DIR}/filament-egl.tgz"
+                    WORKING_DIRECTORY "${FILAMENT_DIR}")
+                # Tarball extracts to a 'filament/' subdir — flatten it.
+                if(EXISTS "${FILAMENT_DIR}/filament/include")
+                    file(GLOB _fc "${FILAMENT_DIR}/filament/*")
+                    foreach(_c ${_fc})
+                        get_filename_component(_n "${_c}" NAME)
+                        file(RENAME "${_c}" "${FILAMENT_DIR}/${_n}")
+                    endforeach()
+                endif()
+                if(EXISTS "${FILAMENT_DIR}/include")
+                    set(_got_filament TRUE)
+                endif()
+            else()
+                message(STATUS "Prebuilt EGL Filament not available (${_dl_status}); will build from source.")
+            endif()
+        endif()
+        # 3. Fall back to building from source.
+        if(NOT _got_filament)
+            message(STATUS "Building custom EGL Filament v${FILAMENT_VERSION} from source (slow ~20-30 min)...")
+            execute_process(
+                COMMAND bash "${CMAKE_SOURCE_DIR}/packaging/build_filament_egl.sh" "${FILAMENT_DIR}"
+                RESULT_VARIABLE _fil_rc)
+            if(NOT _fil_rc EQUAL 0)
+                message(FATAL_ERROR "EGL Filament build failed (rc=${_fil_rc}). "
+                    "See packaging/build_filament_egl.sh; it needs git, clang, libc++ dev, cmake, ninja.")
+            endif()
         endif()
     endif()
 endif()

@@ -25,9 +25,35 @@ if [ -d "$INSTALL_DIR/include" ] && [ -d "$INSTALL_DIR/lib/x86_64" ]; then
     echo "EGL Filament already built at $INSTALL_DIR — skipping."
     exit 0
 fi
+# --- Pre-flight: check the toolchain Filament's from-source build needs, and
+# give one clear, actionable error instead of failing cryptically mid-build. ---
+_missing=()
+for tool in git clang clang++ cmake ninja; do
+    command -v "$tool" >/dev/null 2>&1 || _missing+=("$tool")
+done
+# Filament hardcodes static libc++ on Linux -> it needs the libc++ DEV headers
+# (<__config>) and the static archives libc++.a / libc++abi.a.
+if ! echo '#include <version>' | clang++ -stdlib=libc++ -fsyntax-only -x c++ - >/dev/null 2>&1; then
+    _missing+=("libc++-dev/libc++abi-dev (clang -stdlib=libc++ cannot find libc++ headers)")
+fi
+if [ "${#_missing[@]}" -ne 0 ]; then
+    cat >&2 <<EOF
+error: building Filament from source needs tools that are missing:
+    ${_missing[*]}
 
-command -v clang >/dev/null  || { echo "error: clang not found"; exit 1; }
-command -v ninja >/dev/null  || { echo "error: ninja not found"; exit 1; }
+On Debian/Ubuntu:
+    sudo apt-get install -y git cmake ninja-build clang libc++-dev libc++abi-dev \\
+        libegl1-mesa-dev libgl1-mesa-dev
+On RHEL/Fedora/Alma:
+    sudo dnf install -y git cmake ninja-build clang ninja-build \\
+        mesa-libEGL-devel mesa-libGL-devel
+    # plus a libc++ toolchain (e.g. from the LLVM release tarball)
+
+Alternatively, skip the from-source build by pointing at an existing EGL Filament:
+    FILAMENT_DIR=/path/to/egl-filament pip install .
+EOF
+    exit 1
+fi
 
 # 1. Clone the pinned Filament source (shallow).
 if [ ! -d "$SRC_DIR/.git" ]; then

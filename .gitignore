@@ -41,3 +41,6 @@ test_batch.py
 _skbuild/
 wheelhouse/
 *.egg-info/
+
+# Hosted EGL Filament release artifact (built by packaging/build_filament_egl.sh)
+filament-egl-*.tgz
