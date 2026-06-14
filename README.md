@@ -100,6 +100,8 @@ r = WarpRenderer(config=cfg)
 | Toggle | Effect | Notes |
 |---|---|---|
 | `ssao` | screen-space ambient occlusion | **biggest cost — ~2× faster when off** |
+| `ssao_quality` | SSAO quality `low`/`medium`/`high`/`ultra` | affects look more than speed |
+| `ssao_ssct` | SSAO cone tracing (contact shadows) | small extra cost on top of SSAO |
 | `shadows` | soft shadow maps | |
 | `msaa` / `msaa_samples` | multi-sample AA | 2 / 4 / 8 |
 | `bloom` | HDR bloom | off by default |
@@ -108,8 +110,9 @@ r = WarpRenderer(config=cfg)
 | `tone_mapping` | FILMIC vs LINEAR | |
 | `dithering` | temporal dithering | reduces banding |
 
-**Presets:** `high` (photoreal), `fast` (SSAO off, ~2×), `ultra` (8× MSAA + bloom),
-`raw` (no AO/shadows/AA).
+**Presets:** `high` (photoreal, default), `medium` (high-quality SSAO, no cone
+tracing), `fast` (SSAO off, ~2×), `ultra` (8× MSAA + bloom), `raw` (no AO/shadows/AA,
+~3×).
 
 ## Backends
 
@@ -157,26 +160,24 @@ non-NVIDIA GPUs. These need a from-source Filament build (planned).
 
 ### Headless / display
 
-- **Desktop or any host with an X server** → the default **GL** backend works
-  out of the box at full speed.
-- **Headless servers (no X)** → GL auto-falls back to the **Vulkan** backend,
-  which needs the Vulkan loader present. On most distros that's one package:
+Both backends are **fully headless** — no X server, no display, nothing extra to
+install beyond the NVIDIA driver:
 
-  ```bash
-  sudo apt-get install -y libvulkan1     # Debian/Ubuntu
-  sudo dnf install -y vulkan-loader      # RHEL/Fedora
-  ```
+- **GL** (default) uses **surfaceless EGL**, so it renders headless at full speed
+  on a bare GPU server (cloud, cluster, container). This is the recommended path
+  for vision-RL training.
+- **Vulkan** is also headless (shared device + exportable swapchain).
 
-  (The NVIDIA driver already provides the Vulkan ICD; this just adds the loader.)
-
-> A zero-extra-dependency **headless GL** path (EGL surfaceless, no X and no
-> Vulkan loader) is planned for v0.2 via a from-source Filament build.
+GL auto-falls back to Vulkan only if the GL module fails to initialize.
 
 ### Building from source
 
-Needs **Clang + libc++**, the **CUDA toolkit**, and GL/X11 + EGL dev headers.
-`pip install .` from a checkout (or from the sdist) auto-downloads Filament and
-builds both backends:
+Needs **Clang + libc++**, the **CUDA toolkit**, and GL + EGL dev headers.
+`pip install .` from a checkout (or from the sdist) builds both backends.
+
+> The GL backend's headless EGL rendering requires a **custom EGL-enabled Filament
+> build** (Google's prebuilt Linux Filament is GLX-only). The build fetches a
+> patched Filament artifact automatically; see `CMakeLists.txt`.
 
 ```bash
 CC=clang CXX=clang++ pip install .
@@ -185,15 +186,42 @@ CC=clang CXX=clang++ pip install .
 ### Dev rebuilds (no full reinstall)
 
 For iterating on the C++ without a full `pip install`, the two helper scripts
-build the modules in place (point `FILAMENT_DIR` at a prebuilt Filament release):
+build the modules in place (point `FILAMENT_DIR` at the EGL Filament build):
 
 ```bash
-bash native/build_gl.sh   # OpenGL single-sync -> _mujofil_warp_gl
-bash native/build.sh      # Vulkan zero-copy    -> _mujofil_warp
+bash native/build_gl.sh   # OpenGL single-sync, headless EGL -> _mujofil_warp_gl
+bash native/build.sh      # Vulkan zero-copy                  -> _mujofil_warp
 ```
 
 Requirements: an NVIDIA GPU with CUDA, `clang++`/libc++, the CUDA toolkit headers,
-and (for the GL backend) GLX + X11.
+and EGL/GL dev headers.
+
+## Architecture & porting
+
+`mujofil-warp` is **one core with pluggable rendering backends**, so new platforms
+are added as a backend — not a fork.
+
+```
+mujofil_warp/__init__.py     Python API, presets, backend selection   (shared)
+native/render_module.cpp     pybind bindings, batching                (shared)
+native/vendor/core/          scene / material / light bridge          (shared)
+native/renderer_gl.cpp       Linux: surfaceless EGL  + CUDA interop   (backend)
+native/renderer_warp.cpp     Linux: Vulkan device    + CUDA interop   (backend)
+```
+
+Everything platform-specific lives behind the `vf_mujoco::Renderer` interface
+(context creation, GPU→tensor interop). Adding **macOS** or **Windows** means
+adding one `renderer_*.{cpp,mm}` implementing that interface — the scene,
+material, lighting, Python API, and batching layers are reused unchanged.
+
+- **Windows** would use a WGL/EGL context + `OPAQUE_WIN32` external-memory handles
+  for the CUDA interop.
+- **macOS** is a different target: there is **no CUDA on Apple platforms**, so a
+  Mac backend would use Filament's **Metal** backend and export to PyTorch via
+  **MPS** (`MTLBuffer` → torch-MPS) rather than `torch.cuda`.
+
+These are not yet implemented (they need the respective hardware to develop and
+validate on), but the codebase is structured so they slot in without a fork.
 
 ## Layout
 

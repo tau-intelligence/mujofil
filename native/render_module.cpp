@@ -179,6 +179,8 @@ PYBIND11_MODULE(MUJOFIL_WARP_MODULE, m) {
         .def_readwrite("width", &RendererConfig::width)
         .def_readwrite("height", &RendererConfig::height)
         .def_readwrite("enable_ssao", &RendererConfig::enable_ssao)
+        .def_readwrite("ssao_quality", &RendererConfig::ssao_quality)
+        .def_readwrite("ssao_ssct", &RendererConfig::ssao_ssct)
         .def_readwrite("enable_bloom", &RendererConfig::enable_bloom)
         .def_readwrite("enable_fxaa", &RendererConfig::enable_fxaa)
         .def_readwrite("enable_msaa", &RendererConfig::enable_msaa)

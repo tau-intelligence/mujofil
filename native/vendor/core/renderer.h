@@ -29,6 +29,11 @@ struct RendererConfig {
     uint32_t width = 256;
     uint32_t height = 256;
     bool enable_ssao = true;
+    // SSAO quality: 0=LOW, 1=MEDIUM, 2=HIGH, 3=ULTRA. SSAO is the dominant GPU
+    // cost; lower quality is much faster with little visual change. ssao_ssct
+    // toggles screen-space cone tracing (extra contact shadows, expensive).
+    uint8_t ssao_quality = 3;
+    bool ssao_ssct = true;
     bool enable_bloom = false;
     bool enable_fxaa = false;
     bool enable_msaa = true;

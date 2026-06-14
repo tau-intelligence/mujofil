@@ -275,8 +275,13 @@ void Renderer::setup_view() {
     if (config_.enable_ssao) {
         View::AmbientOcclusionOptions ao;
         ao.radius = 0.3f; ao.power = 1.0f; ao.intensity = 1.0f;
-        ao.quality = View::QualityLevel::ULTRA;
-        ao.enabled = true; ao.ssct.enabled = true;
+        switch (config_.ssao_quality) {
+            case 0:  ao.quality = View::QualityLevel::LOW; break;
+            case 1:  ao.quality = View::QualityLevel::MEDIUM; break;
+            case 2:  ao.quality = View::QualityLevel::HIGH; break;
+            default: ao.quality = View::QualityLevel::ULTRA; break;
+        }
+        ao.enabled = true; ao.ssct.enabled = config_.ssao_ssct;
         view_->setAmbientOcclusionOptions(ao);
     }
     if (config_.enable_bloom)

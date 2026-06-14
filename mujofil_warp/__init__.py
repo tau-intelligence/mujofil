@@ -84,6 +84,8 @@ def make_config(
     batch_size: int = 1,
     # --- quality toggles: turn OFF to trade fidelity for throughput ---
     ssao: bool = True,
+    ssao_quality: str | int = "ultra",
+    ssao_ssct: bool = True,
     shadows: bool = True,
     msaa: bool = True,
     msaa_samples: int = 4,
@@ -100,7 +102,12 @@ def make_config(
     fidelity/throughput trade-offs in ``benchmarks/``):
 
     - ``ssao``          screen-space ambient occlusion. **Biggest single cost** --
-                        disabling it is ~2x faster (see the ``fast`` preset).
+                        turning it off is ~2x faster (the ``fast`` preset).
+    - ``ssao_quality``  SSAO quality: "low" | "medium" | "high" | "ultra" (or 0-3).
+                        Affects the look more than the speed -- the SSAO *pass*
+                        dominates, not its quality level.
+    - ``ssao_ssct``     SSAO screen-space cone tracing (extra contact shadows).
+                        A small extra cost on top of SSAO.
     - ``shadows``       soft shadow maps.
     - ``msaa`` / ``msaa_samples``  multi-sample anti-aliasing (2/4/8).
     - ``bloom``         HDR bloom (off by default; cheap-ish).
@@ -111,11 +118,23 @@ def make_config(
 
     ``batch_size`` must be >= the number of worlds passed to ``render_batch``.
     """
+    _ssao_levels = {"low": 0, "medium": 1, "high": 2, "ultra": 3}
+    if isinstance(ssao_quality, str):
+        try:
+            ssao_q = _ssao_levels[ssao_quality.lower()]
+        except KeyError:
+            raise ValueError(
+                f"ssao_quality must be one of {list(_ssao_levels)} or 0-3, "
+                f"got {ssao_quality!r}")
+    else:
+        ssao_q = max(0, min(3, int(ssao_quality)))
     cfg = RendererConfig()
     cfg.width = width
     cfg.height = height
     cfg.batch_size = batch_size
     cfg.enable_ssao = ssao
+    cfg.ssao_quality = ssao_q
+    cfg.ssao_ssct = ssao_ssct
     cfg.enable_shadows = shadows
     cfg.enable_msaa = msaa
     cfg.msaa_samples = msaa_samples
@@ -128,12 +147,21 @@ def make_config(
 
 
 # Named quality presets so users can reproduce our benchmark trends on their own
-# hardware. ``high`` = full photoreal PBR; ``fast`` = SSAO off (~2x throughput);
-# ``ultra`` = + bloom & 8x MSAA. Pass to ``WarpRenderer(preset=...)``.
+# hardware. Pass to ``WarpRenderer(preset=...)``; override individual toggles too.
+#   high    -- full photoreal PBR (ULTRA SSAO + cone tracing). The default.
+#   medium  -- HIGH-quality SSAO, no cone tracing: nearly identical look, a little
+#              faster (the SSAO *pass* dominates, not its quality level).
+#   fast    -- SSAO off (~2x throughput), shadows + MSAA kept. The big lever.
+#   ultra   -- high + bloom + 8x MSAA.
+#   raw     -- no AO / shadows / AA (maximum throughput, ~3x).
 QUALITY_PRESETS = {
-    "high": dict(ssao=True, shadows=True, msaa=True, msaa_samples=4),
+    "high": dict(ssao=True, ssao_quality="ultra", ssao_ssct=True,
+                 shadows=True, msaa=True, msaa_samples=4),
+    "medium": dict(ssao=True, ssao_quality="high", ssao_ssct=False,
+                   shadows=True, msaa=True, msaa_samples=4),
     "fast": dict(ssao=False, shadows=True, msaa=True, msaa_samples=4),
-    "ultra": dict(ssao=True, shadows=True, msaa=True, msaa_samples=8, bloom=True),
+    "ultra": dict(ssao=True, ssao_quality="ultra", ssao_ssct=True,
+                  shadows=True, msaa=True, msaa_samples=8, bloom=True),
     "raw": dict(ssao=False, shadows=False, msaa=False),
 }
 
