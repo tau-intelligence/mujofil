@@ -56,30 +56,15 @@ void SceneBridge::create_geom(const mjModel* model, int geom_id) {
     const mjtNum* geom_size = model->geom_size + geom_id * 3;
     const float* geom_rgba = model->geom_rgba + geom_id * 4;
 
-    // Skip invisible geoms (collision-only, group >= 3, or transparent)
+    // Skip invisible geoms (collision-only group, or fully transparent).
     int geom_group = model->geom_group[geom_id];
-    if (geom_group >= 3) return;  // collision-only
-    if (geom_rgba[3] < 0.01f) return;  // fully transparent
+    if (geom_group >= 3) return;        // collision-only
+    if (geom_rgba[3] < 0.01f) return;   // fully transparent
 
-    // If the geom references a MuJoCo material, honor its PBR metallic/roughness
-    // (and color) directly instead of guessing from brightness. This lets MJCF
-    // authors drive real PBR (metal/glossy/rough) for primitive scenes.
-    bool has_mat = false;
-    float mat_metallic = 0.0f, mat_roughness = 0.5f;
-    const float* mat_color = geom_rgba;
-    int matid = model->geom_matid[geom_id];
-    if (matid >= 0) {
-        has_mat = true;
-        mat_metallic = model->mat_metallic[matid];
-        mat_roughness = model->mat_roughness[matid];
-        // geom_rgba defaults to (0.5,0.5,0.5,1); if a material is set and the
-        // geom color is the default, use the material's rgba.
-        mat_color = model->mat_rgba + matid * 4;
-    }
+    ResolvedMaterial rm = resolve_material(model, geom_id);
 
-    // Render MuJoCo geoms directly so a standard MJCF (primitives AND mesh
-    // assets) renders without needing pre-converted GLBs. Mesh geometry is read
-    // straight from the compiled mjModel mesh buffers.
+    // Render MuJoCo geoms directly so a standard MJCF (primitives, mesh assets,
+    // height fields) renders with full material/texture coverage — no GLB needed.
     switch (geom_type) {
         case mjGEOM_PLANE:
         case mjGEOM_SPHERE:
@@ -87,28 +72,97 @@ void SceneBridge::create_geom(const mjModel* model, int geom_id) {
         case mjGEOM_CAPSULE:
         case mjGEOM_CYLINDER:
         case mjGEOM_ELLIPSOID:
-            create_primitive(geom_id, geom_type, geom_size, mat_color,
-                             has_mat, mat_metallic, mat_roughness);
+            create_primitive(geom_id, geom_type, geom_size, rm);
             break;
         case mjGEOM_MESH: {
-            // geom_dataid indexes into the model's mesh arrays.
             int mesh_id = model->geom_dataid[geom_id];
-            if (mesh_id >= 0) {
-                create_mesh(model, geom_id, mesh_id, mat_color,
-                            has_mat, mat_metallic, mat_roughness);
-            }
+            if (mesh_id >= 0) create_mesh(model, geom_id, mesh_id, rm);
+            break;
+        }
+        case mjGEOM_HFIELD: {
+            int hfield_id = model->geom_dataid[geom_id];
+            if (hfield_id >= 0) create_hfield(model, geom_id, hfield_id, geom_size, rm);
             break;
         }
         default:
-            // hfield / sdf etc. are not yet supported natively.
+            // sdf etc. are not yet supported natively.
             break;
     }
 }
 
+ResolvedMaterial SceneBridge::resolve_material(const mjModel* model, int geom_id) {
+    ResolvedMaterial rm;
+    const float* geom_rgba = model->geom_rgba + geom_id * 4;
+    int geom_type = model->geom_type[geom_id];
+    for (int k = 0; k < 4; ++k) rm.rgba[k] = geom_rgba[k];
+
+    int matid = model->geom_matid[geom_id];
+    if (matid >= 0) {
+        rm.has_mat = true;
+        rm.metallic = model->mat_metallic[matid];
+        rm.roughness = model->mat_roughness[matid];
+        // MuJoCo specular (0..1, default 0.5) maps well onto Filament's
+        // dielectric reflectance (0.5 = ~4% F0). emission scales self-lighting.
+        rm.reflectance = model->mat_specular[matid];
+        rm.emissive = model->mat_emission[matid];
+        // Prefer the material's rgba unless the geom set a non-default color.
+        const float* mc = model->mat_rgba + matid * 4;
+        bool geom_default = (geom_rgba[0] == 0.5f && geom_rgba[1] == 0.5f &&
+                             geom_rgba[2] == 0.5f && geom_rgba[3] == 1.0f);
+        if (geom_default) for (int k = 0; k < 4; ++k) rm.rgba[k] = mc[k];
+
+        rm.uvscale[0] = model->mat_texrepeat[matid * 2 + 0];
+        rm.uvscale[1] = model->mat_texrepeat[matid * 2 + 1];
+
+        // Resolve a base-color texture (RGB or RGBA role).
+        int texid = model->mat_texid[matid * mjNTEXROLE + mjTEXROLE_RGB];
+        if (texid < 0) texid = model->mat_texid[matid * mjNTEXROLE + mjTEXROLE_RGBA];
+        if (texid >= 0 && texid < model->ntex) {
+            int tw = model->tex_width[texid];
+            int th = model->tex_height[texid];
+            int nch = model->tex_nchannel[texid];
+            const uint8_t* tdata = model->tex_data + model->tex_adr[texid];
+            int ttype = model->tex_type[texid];
+            if (ttype == mjTEXTURE_2D) {
+                rm.albedo_2d = material_manager_->get_or_create_texture_2d(
+                    texid, tw, th, nch, tdata);
+            } else { // CUBE or SKYBOX used as a geom texture
+                rm.cube = material_manager_->get_or_create_texture_cube(
+                    texid, tw, th, nch, tdata);
+            }
+        }
+    } else {
+        // No MuJoCo material: keep a tasteful brightness heuristic for scalars so
+        // bare MJCF colors still look like plausible materials.
+        float brightness = (rm.rgba[0] + rm.rgba[1] + rm.rgba[2]) / 3.0f;
+        rm.roughness = 0.5f; rm.metallic = 0.0f; rm.reflectance = 0.2f;
+        if (brightness < 0.25f) { rm.roughness = 0.45f; rm.metallic = 0.4f; rm.reflectance = 0.35f; }
+        else if (brightness > 0.8f) { rm.roughness = 0.4f; rm.reflectance = 0.25f; }
+        else if (rm.rgba[0] > 0.7f && rm.rgba[1] < 0.3f) { rm.roughness = 0.4f; rm.reflectance = 0.25f; }
+    }
+
+    // A large untextured/material-less plane reads best fully diffuse so IBL
+    // doesn't band across it.
+    if (geom_type == mjGEOM_PLANE && !rm.has_mat && !rm.textured()) {
+        rm.roughness = 1.0f; rm.metallic = 0.0f; rm.reflectance = 0.0f;
+    }
+    return rm;
+}
+
+filament::MaterialInstance* SceneBridge::make_instance(const ResolvedMaterial& rm) {
+    if (rm.textured()) {
+        return material_manager_->create_mujoco_textured_instance(
+            rm.rgba[0], rm.rgba[1], rm.rgba[2], rm.rgba[3],
+            rm.roughness, rm.metallic, rm.reflectance, rm.emissive,
+            rm.uvscale[0], rm.uvscale[1], rm.albedo_2d, rm.cube);
+    }
+    return material_manager_->create_pbr_instance(
+        rm.rgba[0], rm.rgba[1], rm.rgba[2], rm.rgba[3],
+        rm.roughness, rm.metallic, rm.reflectance, rm.emissive);
+}
+
 void SceneBridge::create_primitive(int geom_id, int geom_type,
-                                    const mjtNum* size, const float* rgba,
-                                    bool has_mat, float mat_metallic,
-                                    float mat_roughness) {
+                                    const mjtNum* size, const ResolvedMaterial& rm) {
     std::vector<float> vertices;
     std::vector<uint32_t> indices;
 
@@ -137,67 +191,31 @@ void SceneBridge::create_primitive(int geom_id, int geom_type,
             return;
     }
 
-    // Determine PBR properties from color
-    float brightness = (rgba[0] + rgba[1] + rgba[2]) / 3.0f;
-    float roughness = 0.4f;  // default
-    float metallic = 0.0f;
-    float reflectance = 0.5f;
-
-    // Dark surfaces = metal/rubber (robot joints)
-    if (brightness < 0.25f) {
-        roughness = 0.45f;
-        metallic = 0.4f;
-        reflectance = 0.35f;
-    }
-    // White/light grey = matte plastic (robot body)
-    else if (brightness > 0.8f) {
-        roughness = 0.4f;
-        metallic = 0.0f;
-        reflectance = 0.25f;
-    }
-    // Red accents
-    else if (rgba[0] > 0.7f && rgba[1] < 0.3f) {
-        roughness = 0.4f;
-        metallic = 0.0f;
-        reflectance = 0.25f;
-    }
-    // Mid-tone = general objects
-    else {
-        roughness = 0.5f;
-        metallic = 0.0f;
-        reflectance = 0.2f;
+    // UVs are only needed for the textured material. The plane gets real planar
+    // UVs (for 2D textures); other geoms use the material's object-space cube
+    // sampling, so a zero UV buffer just satisfies the uv0 requirement.
+    std::vector<float> uvs;
+    if (rm.textured()) {
+        const uint32_t vcount = static_cast<uint32_t>(vertices.size() / 6);
+        uvs.resize(static_cast<size_t>(vcount) * 2, 0.0f);
+        if (geom_type == mjGEOM_PLANE) {
+            const float inv = 0.5f / GROUND_PLANE_SIZE;
+            for (uint32_t i = 0; i < vcount; ++i) {
+                float x = vertices[i * 6 + 0], y = vertices[i * 6 + 1];
+                uvs[i * 2 + 0] = x * inv + 0.5f;
+                uvs[i * 2 + 1] = y * inv + 0.5f;
+            }
+        }
     }
 
-    // A real MuJoCo material overrides the color-brightness heuristic.
-    if (has_mat) {
-        roughness = mat_roughness;
-        metallic = mat_metallic;
-        reflectance = 0.5f;
-    }
-
-    float final_r = rgba[0], final_g = rgba[1], final_b = rgba[2], final_a = rgba[3];
-    if (geom_type == mjGEOM_PLANE && !has_mat) {
-        // Untextured/material-less plane: honor color but keep it fully diffuse
-        // (roughness 1, no specular) so IBL doesn't band on the large surface.
-        roughness = 1.0f;
-        metallic = 0.0f;
-        reflectance = 0.0f;
-    }
-    auto* mat_inst = material_manager_->create_pbr_instance(
-        final_r, final_g, final_b, final_a,
-        roughness,
-        metallic,
-        reflectance
-    );
-
-    auto renderable = create_renderable(vertices, indices, mat_inst, geom_id);
+    auto* mat_inst = make_instance(rm);
+    auto renderable = create_renderable(vertices, indices, mat_inst, geom_id, uvs);
     renderable.mj_geom_type = geom_type;
     geom_renderables_.push_back(std::move(renderable));
 }
 
 void SceneBridge::create_mesh(const mjModel* model, int geom_id, int mesh_id,
-                              const float* rgba, bool has_mat,
-                              float mat_metallic, float mat_roughness) {
+                              const ResolvedMaterial& rm) {
     // MuJoCo stores mesh data in shared arrays, addressed per mesh. Crucially,
     // vertices and normals have INDEPENDENT counts/indices: faces index vertices
     // via mesh_face and normals via mesh_facenormal (which may differ). So we
@@ -216,16 +234,25 @@ void SceneBridge::create_mesh(const mjModel* model, int geom_id, int mesh_id,
     const int* mj_facenorm = model->mesh_facenormal;     // (nmeshface x 3) norm idx
     const bool have_normals = (model->mesh_normalnum[mesh_id] > 0);
 
+    // Texture coordinates (optional): faces index texcoords via mesh_facetexcoord.
+    int tc_start = model->mesh_texcoordadr[mesh_id];
+    const bool have_uv = (tc_start >= 0 && rm.textured());
+    const float* mj_tc = model->mesh_texcoord;           // (nmeshtexcoord x 2)
+    const int* mj_facetc = model->mesh_facetexcoord;     // (nmeshface x 3) tc idx
+
     // Interleaved position (3) + normal (3) = 6 floats per corner, 3 corners/face.
     std::vector<float> vertices;
     vertices.reserve(static_cast<size_t>(face_count) * 3 * 6);
     std::vector<uint32_t> indices;
     indices.reserve(static_cast<size_t>(face_count) * 3);
+    std::vector<float> uvs;
+    if (have_uv) uvs.reserve(static_cast<size_t>(face_count) * 3 * 2);
 
     uint32_t out_idx = 0;
     for (int f = 0; f < face_count; ++f) {
         const int* fv = mj_faces + (face_start + f) * 3;
         const int* fn = mj_facenorm + (face_start + f) * 3;
+        const int* ft = have_uv ? mj_facetc + (face_start + f) * 3 : nullptr;
 
         // Compute a geometric face normal as a fallback (and for meshes without
         // stored normals). Vertices are local indices within this mesh.
@@ -256,23 +283,81 @@ void SceneBridge::create_mesh(const mjModel* model, int geom_id, int mesh_id,
                 vertices.push_back(fny);
                 vertices.push_back(fnz);
             }
+            if (have_uv) {
+                const float* uv = mj_tc + (tc_start + ft[k]) * 2;
+                // MuJoCo texcoords use a top-left origin; flip V for Filament.
+                uvs.push_back(uv[0]);
+                uvs.push_back(1.0f - uv[1]);
+            }
             indices.push_back(out_idx++);
         }
     }
 
-    // PBR properties: honor a real MuJoCo material; otherwise a sensible matte
-    // default that suits most robot/object meshes.
-    float roughness = 0.5f, metallic = 0.0f, reflectance = 0.5f;
-    if (has_mat) {
-        roughness = mat_roughness;
-        metallic = mat_metallic;
-    }
-    auto* mat_inst = material_manager_->create_pbr_instance(
-        rgba[0], rgba[1], rgba[2], rgba[3],
-        roughness, metallic, reflectance);
-
-    auto renderable = create_renderable(vertices, indices, mat_inst, geom_id);
+    auto* mat_inst = make_instance(rm);
+    auto renderable = create_renderable(vertices, indices, mat_inst, geom_id, uvs);
     renderable.mj_geom_type = mjGEOM_MESH;
+    geom_renderables_.push_back(std::move(renderable));
+}
+
+void SceneBridge::create_hfield(const mjModel* model, int geom_id, int hfield_id,
+                                const mjtNum* /*size*/, const ResolvedMaterial& rm) {
+    // MuJoCo height field: an nrow x ncol grid of elevations in [0,1], scaled to
+    // the geom's local box (radius_x, radius_y, elevation_z, base_z). Build a
+    // triangulated surface mesh (pos+normal) plus optional planar UVs.
+    int nrow = model->hfield_nrow[hfield_id];
+    int ncol = model->hfield_ncol[hfield_id];
+    if (nrow < 2 || ncol < 2) return;
+    const mjtNum* hsize = model->hfield_size + hfield_id * 4;  // x, y, z_top, z_base
+    const float rx = static_cast<float>(hsize[0]);
+    const float ry = static_cast<float>(hsize[1]);
+    const float rz = static_cast<float>(hsize[2]);
+    const float* hdata = model->hfield_data + model->hfield_adr[hfield_id];
+
+    auto elev = [&](int r, int c) -> float {
+        return hdata[r * ncol + c] * rz;  // [0,1] -> world height
+    };
+    auto px = [&](int c) -> float { return -rx + 2.0f * rx * c / (ncol - 1); };
+    auto py = [&](int r) -> float { return -ry + 2.0f * ry * r / (nrow - 1); };
+
+    std::vector<float> vertices;
+    vertices.reserve(static_cast<size_t>(nrow) * ncol * 6);
+    std::vector<float> uvs;
+    const bool tex = rm.textured();
+    if (tex) uvs.reserve(static_cast<size_t>(nrow) * ncol * 2);
+
+    for (int r = 0; r < nrow; ++r) {
+        for (int c = 0; c < ncol; ++c) {
+            float x = px(c), y = py(r), z = elev(r, c);
+            // Central-difference normal from neighbours.
+            int cm = c > 0 ? c - 1 : c, cp = c < ncol - 1 ? c + 1 : c;
+            int rm_ = r > 0 ? r - 1 : r, rp = r < nrow - 1 ? r + 1 : r;
+            float dzdx = (elev(r, cp) - elev(r, cm)) / (px(cp) - px(cm) + 1e-9f);
+            float dzdy = (elev(rp, c) - elev(rm_, c)) / (py(rp) - py(rm_) + 1e-9f);
+            float nx = -dzdx, ny = -dzdy, nz = 1.0f;
+            float nl = std::sqrt(nx*nx + ny*ny + nz*nz);
+            nx/=nl; ny/=nl; nz/=nl;
+            vertices.push_back(x); vertices.push_back(y); vertices.push_back(z);
+            vertices.push_back(nx); vertices.push_back(ny); vertices.push_back(nz);
+            if (tex) {
+                uvs.push_back(static_cast<float>(c) / (ncol - 1));
+                uvs.push_back(static_cast<float>(r) / (nrow - 1));
+            }
+        }
+    }
+
+    std::vector<uint32_t> indices;
+    indices.reserve(static_cast<size_t>(nrow - 1) * (ncol - 1) * 6);
+    auto idx = [&](int r, int c) { return static_cast<uint32_t>(r * ncol + c); };
+    for (int r = 0; r < nrow - 1; ++r) {
+        for (int c = 0; c < ncol - 1; ++c) {
+            indices.push_back(idx(r, c));   indices.push_back(idx(r, c + 1));   indices.push_back(idx(r + 1, c));
+            indices.push_back(idx(r + 1, c)); indices.push_back(idx(r, c + 1)); indices.push_back(idx(r + 1, c + 1));
+        }
+    }
+
+    auto* mat_inst = make_instance(rm);
+    auto renderable = create_renderable(vertices, indices, mat_inst, geom_id, uvs);
+    renderable.mj_geom_type = mjGEOM_HFIELD;
     geom_renderables_.push_back(std::move(renderable));
 }
 
@@ -280,23 +365,32 @@ GeomRenderable SceneBridge::create_renderable(
     const std::vector<float>& vertices,
     const std::vector<uint32_t>& indices,
     filament::MaterialInstance* mat_inst,
-    int geom_id)
+    int geom_id,
+    const std::vector<float>& uvs)
 {
     auto* engine = renderer_.engine();
 
     uint32_t vertex_count = static_cast<uint32_t>(vertices.size() / 6);
+    const bool has_uv = !uvs.empty();
     uint32_t index_count = static_cast<uint32_t>(indices.size());
 
     // Vertex buffer: position (buffer 0) + tangents as SHORT4 (buffer 1)
-    auto* vb = filament::VertexBuffer::Builder()
+    // + optional UV0 (buffer 2). When no UVs are needed the fast 2-buffer
+    // position+tangent path is used (identical to the untextured fast path).
+    const uint8_t buffer_count = has_uv ? 3 : 2;
+    auto vb_builder = filament::VertexBuffer::Builder()
         .vertexCount(vertex_count)
-        .bufferCount(2)
+        .bufferCount(buffer_count)
         .attribute(filament::VertexAttribute::POSITION, 0,
                    filament::VertexBuffer::AttributeType::FLOAT3, 0, 24)
         .attribute(filament::VertexAttribute::TANGENTS, 1,
                    filament::VertexBuffer::AttributeType::SHORT4, 0, 8)
-        .normalized(filament::VertexAttribute::TANGENTS)
-        .build(*engine);
+        .normalized(filament::VertexAttribute::TANGENTS);
+    if (has_uv) {
+        vb_builder.attribute(filament::VertexAttribute::UV0, 2,
+                             filament::VertexBuffer::AttributeType::FLOAT2, 0, 8);
+    }
+    auto* vb = vb_builder.build(*engine);
 
     // Upload position data (buffer 0)
     auto vert_data = new float[vertices.size()];
@@ -369,6 +463,20 @@ GeomRenderable SceneBridge::create_renderable(
             tangent_data, vertex_count * 4 * sizeof(int16_t),
             [](void* buf, size_t, void*) { delete[] static_cast<int16_t*>(buf); }
         ));
+
+    // UV0 data (buffer 2), only when a textured material needs it.
+    if (has_uv) {
+        auto uv_data = new float[vertex_count * 2];
+        // uvs may be shorter than expected only if mismatched; guard the copy.
+        size_t n = std::min(uvs.size(), static_cast<size_t>(vertex_count) * 2);
+        std::memcpy(uv_data, uvs.data(), n * sizeof(float));
+        for (size_t i = n; i < static_cast<size_t>(vertex_count) * 2; ++i) uv_data[i] = 0.0f;
+        vb->setBufferAt(*engine, 2,
+            filament::VertexBuffer::BufferDescriptor(
+                uv_data, vertex_count * 2 * sizeof(float),
+                [](void* buf, size_t, void*) { delete[] static_cast<float*>(buf); }
+            ));
+    }
 
     // Index buffer
     auto* ib = filament::IndexBuffer::Builder()

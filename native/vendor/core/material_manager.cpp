@@ -25,22 +25,18 @@ void MaterialManager::initialize() {
     create_default_material();
 }
 
-void MaterialManager::create_default_material() {
-    // Try to load from compiled .filamat file first
-    // The build system compiles assets/materials/default_pbr.mat → build/assets/materials/default_pbr.filamat
-
-    // Search order: a directory provided by the Python package via the
-    // VF_MUJOCO_MATERIALS_DIR env var (set in mujofil/__init__.py to the
-    // packaged materials folder, making the installed wheel relocatable), then
-    // the legacy project-relative fallbacks for in-tree development.
+filament::Material* MaterialManager::load_named_material(const std::string& filename) {
+    // Search order: VF_MUJOCO_MATERIALS_DIR (set by the Python package to the
+    // packaged materials folder), then project-relative dev fallbacks.
     std::vector<std::string> search_paths;
     if (const char* env = std::getenv("VF_MUJOCO_MATERIALS_DIR")) {
-        search_paths.emplace_back(std::string(env) + "/default_pbr.filamat");
+        search_paths.emplace_back(std::string(env) + "/" + filename);
     }
     search_paths.insert(search_paths.end(), {
-        "assets/materials/default_pbr.filamat",
-        "../assets/materials/default_pbr.filamat",
-        "build/assets/materials/default_pbr.filamat",
+        "assets/materials/" + filename,
+        "../assets/materials/" + filename,
+        "build/assets/materials/" + filename,
+        "mujofil/materials/prebuilt/" + filename,
     });
 
     for (const auto& path : search_paths) {
@@ -52,23 +48,31 @@ void MaterialManager::create_default_material() {
             file.read(reinterpret_cast<char*>(data.data()), size);
             file.close();
 
-            default_material_ = filament::Material::Builder()
+            auto* mat = filament::Material::Builder()
                 .package(data.data(), data.size())
                 .build(*engine_);
-
-            if (default_material_) {
-                materials_["default_pbr"] = default_material_;
-                return;
-            }
+            if (mat) return mat;
         }
     }
+    return nullptr;
+}
 
-    // If no compiled material found, we need the user to build materials first.
-    // This is a hard requirement — Filament needs compiled material packages.
-    throw std::runtime_error(
-        "Could not load default PBR material. "
-        "Run 'cmake --build build --target materials' first, "
-        "or set the working directory to the project root.");
+void MaterialManager::create_default_material() {
+    default_material_ = load_named_material("default_pbr.filamat");
+    if (!default_material_) {
+        throw std::runtime_error(
+            "Could not load default PBR material (default_pbr.filamat). "
+            "Run 'cmake --build build --target materials' first, "
+            "or set VF_MUJOCO_MATERIALS_DIR / the working directory to the project root.");
+    }
+    materials_["default_pbr"] = default_material_;
+
+    // Optional extended materials — if absent, fall back to the default at use
+    // sites (older installs without the new packages still work).
+    textured_material_ = load_named_material("textured_pbr.filamat");
+    if (textured_material_) materials_["textured_pbr"] = textured_material_;
+    blend_material_ = load_named_material("blend_pbr.filamat");
+    if (blend_material_) materials_["blend_pbr"] = blend_material_;
 }
 
 void MaterialManager::load_material(const std::string& name,
@@ -102,22 +106,184 @@ void MaterialManager::load_material(const std::string& name,
 
 filament::MaterialInstance* MaterialManager::create_pbr_instance(
     float r, float g, float b, float a,
-    float roughness, float metallic, float reflectance)
+    float roughness, float metallic, float reflectance, float emissive)
 {
     if (!default_material_) {
         throw std::runtime_error("MaterialManager not initialized");
     }
 
-    auto* instance = default_material_->createInstance();
+    // Use the transparent (fade) material for semi-transparent geoms so MuJoCo's
+    // alpha renders correctly; otherwise the fast opaque material.
+    filament::Material* mat = (a < 0.999f && blend_material_)
+        ? blend_material_ : default_material_;
+    auto* instance = mat->createInstance();
 
-    instance->setParameter("baseColor",
-        filament::math::float4{r, g, b, a});
+    instance->setParameter("baseColor", filament::math::float4{r, g, b, a});
     instance->setParameter("roughness", roughness);
     instance->setParameter("metallic", metallic);
     instance->setParameter("reflectance", reflectance);
+    instance->setParameter("emissive",
+        filament::math::float3{emissive, emissive, emissive});
 
     instances_.push_back(instance);
     return instance;
+}
+
+filament::MaterialInstance* MaterialManager::create_mujoco_textured_instance(
+    float r, float g, float b, float a,
+    float roughness, float metallic, float reflectance, float emissive,
+    float uvscale_x, float uvscale_y,
+    filament::Texture* albedo_2d, filament::Texture* cube)
+{
+    // Fall back to a solid instance if the textured material isn't available or
+    // no texture was supplied.
+    if (!textured_material_ || (!albedo_2d && !cube)) {
+        return create_pbr_instance(r, g, b, a, roughness, metallic, reflectance, emissive);
+    }
+
+    auto* instance = textured_material_->createInstance();
+    instance->setParameter("baseColor", filament::math::float4{r, g, b, a});
+    instance->setParameter("roughness", roughness);
+    instance->setParameter("metallic", metallic);
+    instance->setParameter("reflectance", reflectance);
+    instance->setParameter("emissive",
+        filament::math::float3{emissive, emissive, emissive});
+    instance->setParameter("uvscale", filament::math::float2{uvscale_x, uvscale_y});
+
+    filament::TextureSampler sampler(
+        filament::TextureSampler::MinFilter::LINEAR_MIPMAP_LINEAR,
+        filament::TextureSampler::MagFilter::LINEAR,
+        filament::TextureSampler::WrapMode::REPEAT);
+
+    // The material declares both samplers; bind the unused one to whatever we
+    // have so Filament always has a valid texture bound, and gate via booleans.
+    filament::Texture* any2d = albedo_2d ? albedo_2d : cube;
+    filament::Texture* anyCube = cube ? cube : albedo_2d;
+    if (albedo_2d && albedo_2d->getTarget() == filament::Texture::Sampler::SAMPLER_2D) {
+        instance->setParameter("albedoMap", albedo_2d, sampler);
+        instance->setParameter("useAlbedo", true);
+    } else {
+        // Need a valid 2D texture bound even when unused.
+        instance->setParameter("useAlbedo", false);
+    }
+    if (cube && cube->getTarget() == filament::Texture::Sampler::SAMPLER_CUBEMAP) {
+        instance->setParameter("cubeMap", cube, sampler);
+        instance->setParameter("useCube", !albedo_2d);
+    } else {
+        instance->setParameter("useCube", false);
+    }
+    (void)any2d; (void)anyCube;
+
+    instances_.push_back(instance);
+    return instance;
+}
+
+filament::Texture* MaterialManager::get_or_create_texture_2d(
+    int key, int width, int height, int nchannel, const uint8_t* data)
+{
+    if (key >= 0) {
+        auto it = texture_cache_.find(key);
+        if (it != texture_cache_.end()) return it->second;
+    }
+    if (width <= 0 || height <= 0 || !data) return nullptr;
+
+    // Expand to RGBA8 (Filament-friendly).
+    const size_t px = static_cast<size_t>(width) * height;
+    auto* rgba = new uint8_t[px * 4];
+    for (size_t i = 0; i < px; ++i) {
+        uint8_t r = 0, g = 0, b = 0, a = 255;
+        if (nchannel >= 3) {
+            r = data[i * nchannel + 0];
+            g = data[i * nchannel + 1];
+            b = data[i * nchannel + 2];
+            if (nchannel >= 4) a = data[i * nchannel + 3];
+        } else { // grayscale
+            r = g = b = data[i * nchannel + 0];
+        }
+        rgba[i * 4 + 0] = r;
+        rgba[i * 4 + 1] = g;
+        rgba[i * 4 + 2] = b;
+        rgba[i * 4 + 3] = a;
+    }
+
+    auto* tex = filament::Texture::Builder()
+        .width(static_cast<uint32_t>(width))
+        .height(static_cast<uint32_t>(height))
+        .levels(0xff)  // full mip chain
+        .format(filament::Texture::InternalFormat::SRGB8_A8)
+        .sampler(filament::Texture::Sampler::SAMPLER_2D)
+        .build(*engine_);
+
+    filament::Texture::PixelBufferDescriptor pb(
+        rgba, px * 4,
+        filament::Texture::Format::RGBA,
+        filament::Texture::Type::UBYTE,
+        [](void* buf, size_t, void*) { delete[] static_cast<uint8_t*>(buf); });
+    tex->setImage(*engine_, 0, std::move(pb));
+    tex->generateMipmaps(*engine_);
+
+    if (key >= 0) texture_cache_[key] = tex;
+    return tex;
+}
+
+filament::Texture* MaterialManager::get_or_create_texture_cube(
+    int key, int width, int height, int nchannel, const uint8_t* data)
+{
+    if (key >= 0) {
+        auto it = texture_cache_.find(key);
+        if (it != texture_cache_.end()) return it->second;
+    }
+    if (width <= 0 || !data) return nullptr;
+
+    // MuJoCo cube textures store 6 square faces stacked vertically
+    // (height == 6*width). If not stacked, replicate the single image to 6 faces.
+    const int face = width;
+    const bool stacked = (height == 6 * width);
+    const size_t face_px = static_cast<size_t>(face) * face;
+    auto* rgba = new uint8_t[face_px * 6 * 4];
+
+    auto copy_face = [&](int dst_face, const uint8_t* src) {
+        uint8_t* d = rgba + static_cast<size_t>(dst_face) * face_px * 4;
+        for (size_t i = 0; i < face_px; ++i) {
+            uint8_t r = 0, g = 0, b = 0, a = 255;
+            if (nchannel >= 3) {
+                r = src[i * nchannel + 0];
+                g = src[i * nchannel + 1];
+                b = src[i * nchannel + 2];
+                if (nchannel >= 4) a = src[i * nchannel + 3];
+            } else {
+                r = g = b = src[i * nchannel + 0];
+            }
+            d[i * 4 + 0] = r; d[i * 4 + 1] = g; d[i * 4 + 2] = b; d[i * 4 + 3] = a;
+        }
+    };
+    for (int f = 0; f < 6; ++f) {
+        const uint8_t* src = stacked
+            ? data + static_cast<size_t>(f) * face_px * nchannel
+            : data;
+        copy_face(f, src);
+    }
+
+    auto* tex = filament::Texture::Builder()
+        .width(static_cast<uint32_t>(face))
+        .height(static_cast<uint32_t>(face))
+        .levels(1)
+        .format(filament::Texture::InternalFormat::SRGB8_A8)
+        .sampler(filament::Texture::Sampler::SAMPLER_CUBEMAP)
+        .build(*engine_);
+
+    filament::Texture::PixelBufferDescriptor pb(
+        rgba, face_px * 6 * 4,
+        filament::Texture::Format::RGBA,
+        filament::Texture::Type::UBYTE,
+        [](void* buf, size_t, void*) { delete[] static_cast<uint8_t*>(buf); });
+    // Face order: +X, -X, +Y, -Y, +Z, -Z.
+    filament::Texture::FaceOffsets offsets;
+    for (int f = 0; f < 6; ++f) offsets.offsets[f] = static_cast<uint32_t>(f * face_px * 4);
+    tex->setImage(*engine_, 0, std::move(pb), offsets);
+
+    if (key >= 0) texture_cache_[key] = tex;
+    return tex;
 }
 
 filament::MaterialInstance* MaterialManager::create_textured_instance(
@@ -164,11 +330,18 @@ void MaterialManager::clear() {
     }
     instances_.clear();
 
+    for (auto& [key, tex] : texture_cache_) {
+        engine_->destroy(tex);
+    }
+    texture_cache_.clear();
+
     for (auto& [name, mat] : materials_) {
         engine_->destroy(mat);
     }
     materials_.clear();
     default_material_ = nullptr;
+    textured_material_ = nullptr;
+    blend_material_ = nullptr;
 }
 
 } // namespace vf_mujoco

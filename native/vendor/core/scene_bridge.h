@@ -37,6 +37,21 @@ struct GeomRenderable {
     int mj_geom_type = -1;
 };
 
+/// Fully resolved appearance for one geom: PBR scalars + optional MuJoCo texture.
+/// Computed once in create_geom and consumed by create_primitive/create_mesh.
+struct ResolvedMaterial {
+    float rgba[4] = {0.5f, 0.5f, 0.5f, 1.0f};
+    float roughness = 0.5f;
+    float metallic = 0.0f;
+    float reflectance = 0.5f;
+    float emissive = 0.0f;
+    float uvscale[2] = {1.0f, 1.0f};
+    bool has_mat = false;                 // a MuJoCo <material> drives PBR scalars
+    filament::Texture* albedo_2d = nullptr;  // 2D texture (planes/hfields/meshes)
+    filament::Texture* cube = nullptr;       // cube texture (other geoms)
+    bool textured() const { return albedo_2d != nullptr || cube != nullptr; }
+};
+
 /// Bridges MuJoCo simulation state to Filament scene graph.
 /// Handles: mesh conversion, transform syncing, material assignment.
 class SceneBridge {
@@ -121,17 +136,23 @@ private:
     /// Create Filament renderable for a MuJoCo geom.
     void create_geom(const mjModel* model, int geom_id);
 
-    /// Create primitive geometry (box, sphere, capsule, cylinder, plane).
-    void create_primitive(int geom_id, int geom_type,
-                          const mjtNum* size, const float* rgba,
-                          bool has_mat = false, float mat_metallic = 0.0f,
-                          float mat_roughness = 0.5f);
+    /// Resolve the full appearance (PBR scalars + textures) for a geom.
+    ResolvedMaterial resolve_material(const mjModel* model, int geom_id);
 
-    /// Create mesh geometry from MuJoCo mesh data. Honors the geom's MuJoCo
-    /// material (metallic/roughness/color) when has_mat is set.
+    /// Build a Filament material instance from a resolved material.
+    filament::MaterialInstance* make_instance(const ResolvedMaterial& rm);
+
+    /// Create primitive geometry (box, sphere, capsule, cylinder, plane, ellipsoid).
+    void create_primitive(int geom_id, int geom_type,
+                          const mjtNum* size, const ResolvedMaterial& rm);
+
+    /// Create mesh geometry from MuJoCo mesh data.
     void create_mesh(const mjModel* model, int geom_id, int mesh_id,
-                     const float* rgba, bool has_mat = false,
-                     float mat_metallic = 0.0f, float mat_roughness = 0.5f);
+                     const ResolvedMaterial& rm);
+
+    /// Create a height-field (terrain) renderable from MuJoCo hfield data.
+    void create_hfield(const mjModel* model, int geom_id, int hfield_id,
+                       const mjtNum* size, const ResolvedMaterial& rm);
 
     /// Build a sphere vertex/index buffer.
     void build_sphere(float radius, int slices, int stacks,
@@ -167,11 +188,14 @@ private:
     filament::math::mat4f mj_to_filament_transform(const double* pos,
                                                      const double* quat);
 
-    /// Upload vertex + index data and create a renderable entity.
+    /// Upload vertex + index data and create a renderable entity. When uvs is
+    /// non-empty (2 floats per vertex) a UV0 attribute is added so textured
+    /// materials can sample; otherwise the fast position+tangent path is used.
     GeomRenderable create_renderable(const std::vector<float>& vertices,
                                      const std::vector<uint32_t>& indices,
                                      filament::MaterialInstance* mat_inst,
-                                     int geom_id);
+                                     int geom_id,
+                                     const std::vector<float>& uvs = {});
 
     Renderer& renderer_;
     std::unique_ptr<MaterialManager> material_manager_;

@@ -78,6 +78,7 @@ private:
     filament::Skybox* skybox_ = nullptr;
     filament::Texture* ibl_texture_ = nullptr;
     filament::Texture* skybox_texture_ = nullptr;
+    filament::Texture* default_refl_ = nullptr;  // neutral reflection cubemap (fallback)
 };
 
 } // namespace vf_mujoco

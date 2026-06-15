@@ -30,12 +30,33 @@ public:
     /// Load a material from in-memory .filamat data.
     void load_material(const std::string& name, const uint8_t* data, size_t size);
 
-    /// Create a PBR material instance with the given parameters.
+    /// Create a PBR material instance with the given parameters. When alpha < 1
+    /// a transparent (fade-blended) material is used so MuJoCo's semi-transparent
+    /// geoms render correctly; otherwise the fast opaque material is used.
     filament::MaterialInstance* create_pbr_instance(
         float r, float g, float b, float a,
         float roughness = 0.5f,
         float metallic = 0.0f,
-        float reflectance = 0.5f);
+        float reflectance = 0.5f,
+        float emissive = 0.0f);
+
+    /// Create a textured PBR instance that samples a MuJoCo texture. Exactly one
+    /// of albedo_2d / cube may be set; uvscale applies MuJoCo's texrepeat.
+    filament::MaterialInstance* create_mujoco_textured_instance(
+        float r, float g, float b, float a,
+        float roughness, float metallic, float reflectance, float emissive,
+        float uvscale_x, float uvscale_y,
+        filament::Texture* albedo_2d, filament::Texture* cube);
+
+    /// Get (or create + cache) a Filament 2D texture from MuJoCo pixel data.
+    /// key is the MuJoCo texture id (for caching). nchannel is 1/3/4.
+    filament::Texture* get_or_create_texture_2d(
+        int key, int width, int height, int nchannel, const uint8_t* data);
+
+    /// Get (or create + cache) a Filament cubemap from MuJoCo cube texture data
+    /// (6 square faces stacked vertically, height == 6*width).
+    filament::Texture* get_or_create_texture_cube(
+        int key, int width, int height, int nchannel, const uint8_t* data);
 
     /// Create a textured PBR material instance.
     filament::MaterialInstance* create_textured_instance(
@@ -53,11 +74,15 @@ public:
 
 private:
     void create_default_material();
+    filament::Material* load_named_material(const std::string& filename);
 
     filament::Engine* engine_;
     filament::Material* default_material_ = nullptr;
+    filament::Material* textured_material_ = nullptr;
+    filament::Material* blend_material_ = nullptr;
     std::unordered_map<std::string, filament::Material*> materials_;
     std::vector<filament::MaterialInstance*> instances_;
+    std::unordered_map<int, filament::Texture*> texture_cache_;
 };
 
 } // namespace vf_mujoco

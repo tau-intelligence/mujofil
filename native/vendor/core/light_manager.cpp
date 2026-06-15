@@ -57,7 +57,31 @@ void LightManager::setup_default_lighting() {
             filament::math::float3{0.071f, 0.071f, 0.073f},
         };
 
+        // A neutral light-grey reflection cubemap so PBR metals/glossy surfaces
+        // have something to reflect even without a loaded IBL (otherwise a pure
+        // metal renders black). 1x1 per face is enough for a uniform probe.
+        if (!default_refl_) {
+            const uint8_t grey[4] = {180, 182, 188, 255};
+            uint8_t* faces = new uint8_t[6 * 4];
+            for (int f = 0; f < 6; ++f)
+                for (int c = 0; c < 4; ++c) faces[f * 4 + c] = grey[c];
+            default_refl_ = filament::Texture::Builder()
+                .width(1).height(1).levels(1)
+                .format(filament::Texture::InternalFormat::RGBA8)
+                .sampler(filament::Texture::Sampler::SAMPLER_CUBEMAP)
+                .build(*engine_);
+            filament::Texture::PixelBufferDescriptor pb(
+                faces, 6 * 4,
+                filament::Texture::Format::RGBA,
+                filament::Texture::Type::UBYTE,
+                [](void* b, size_t, void*) { delete[] static_cast<uint8_t*>(b); });
+            filament::Texture::FaceOffsets off;
+            for (int f = 0; f < 6; ++f) off.offsets[f] = f * 4;
+            default_refl_->setImage(*engine_, 0, std::move(pb), off);
+        }
+
         indirect_light_ = filament::IndirectLight::Builder()
+            .reflections(default_refl_)
             .irradiance(3, bands.data())
             .intensity(5000.0f)
             .build(*engine_);
@@ -277,6 +301,10 @@ void LightManager::clear() {
     if (skybox_texture_) {
         engine_->destroy(skybox_texture_);
         skybox_texture_ = nullptr;
+    }
+    if (default_refl_) {
+        engine_->destroy(default_refl_);
+        default_refl_ = nullptr;
     }
 }
 
