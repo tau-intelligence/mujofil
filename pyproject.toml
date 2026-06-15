@@ -88,8 +88,10 @@ manylinux-x86_64-image = "quay.io/pypa/manylinux_2_34_x86_64"
 # Build with the LLVM release toolchain at /opt/llvm (extracted in before-all):
 # its clang++ ships a matching libc++ (headers + runtime) as one consistent set,
 # so `-stdlib=libc++` finds <cstdint>/<fstream> etc. The container's dnf clang
-# has NO libc++ headers, which broke the compile.
-environment = { CC = "/opt/llvm/bin/clang", CXX = "/opt/llvm/bin/clang++", FILAMENT_DIR = "/project/_filament_egl", CUDAToolkit_ROOT = "/usr/local/cuda-12.0" }
+# has NO libc++ headers, which broke the compile. --gcc-toolchain points the
+# portable LLVM clang at manylinux's gcc-toolset-14 for the C runtime objects
+# (crtbeginS.o, libgcc) and the linker, which it otherwise cannot locate.
+environment = { CC = "/opt/llvm/bin/clang", CXX = "/opt/llvm/bin/clang++", CFLAGS = "--gcc-toolchain=/opt/rh/gcc-toolset-14/root/usr", CXXFLAGS = "--gcc-toolchain=/opt/rh/gcc-toolset-14/root/usr", LDFLAGS = "--gcc-toolchain=/opt/rh/gcc-toolset-14/root/usr", FILAMENT_DIR = "/project/_filament_egl", CUDAToolkit_ROOT = "/usr/local/cuda-12.0" }
 before-all = [
     # Build deps: GL + EGL headers, common libs. (clang itself comes from the
     # LLVM tarball below; the dnf clang lacks libc++ headers.)
