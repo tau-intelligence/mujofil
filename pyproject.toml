@@ -85,20 +85,27 @@ test-command = "python -c \"import mujofil_warp; print('mujofil-warp', mujofil_w
 
 [tool.cibuildwheel.linux]
 manylinux-x86_64-image = "quay.io/pypa/manylinux_2_34_x86_64"
-environment = { CC = "clang", CXX = "clang++", FILAMENT_DIR = "/project/_filament_egl", CUDAToolkit_ROOT = "/usr/local/cuda-12.0" }
+# Build with the LLVM release toolchain at /opt/llvm (extracted in before-all):
+# its clang++ ships a matching libc++ (headers + runtime) as one consistent set,
+# so `-stdlib=libc++` finds <cstdint>/<fstream> etc. The container's dnf clang
+# has NO libc++ headers, which broke the compile.
+environment = { CC = "/opt/llvm/bin/clang", CXX = "/opt/llvm/bin/clang++", FILAMENT_DIR = "/project/_filament_egl", CUDAToolkit_ROOT = "/usr/local/cuda-12.0" }
 before-all = [
-    # Build deps: GL + EGL headers, clang, common libs.
-    "dnf install -y wget tar xz gzip clang libatomic libpng-devel zlib-devel libglvnd-devel mesa-libGL-devel mesa-libEGL-devel || yum install -y wget tar xz gzip clang libatomic libpng-devel zlib-devel libglvnd-devel mesa-libGL-devel mesa-libEGL-devel",
+    # Build deps: GL + EGL headers, common libs. (clang itself comes from the
+    # LLVM tarball below; the dnf clang lacks libc++ headers.)
+    "dnf install -y wget tar xz gzip libatomic libpng-devel zlib-devel libglvnd-devel mesa-libGL-devel mesa-libEGL-devel || yum install -y wget tar xz gzip libatomic libpng-devel zlib-devel libglvnd-devel mesa-libGL-devel mesa-libEGL-devel",
     # CUDA 12.0 headers + STATIC cudart (no device code -> wide driver coverage).
     # The static libcudart_static.a + libculibos.a + headers ship in the -devel
     # package (there is no separate cuda-cudart-static-NN-N package on RHEL9).
     "wget -q https://developer.download.nvidia.com/compute/cuda/repos/rhel9/x86_64/cuda-rhel9.repo -O /etc/yum.repos.d/cuda.repo",
     "dnf install -y cuda-cudart-devel-12-0 cuda-driver-devel-12-0",
-    # libc++ runtime (Filament + our module are built with libc++) -> bundled
-    # into the wheel by auditwheel. Fetched from the LLVM release (glibc 2.17).
+    # Full LLVM 18.1.8 toolchain (glibc 2.17 build): provides clang++ AND its
+    # bundled libc++ headers + runtime as one consistent set. Extract to
+    # /opt/llvm (CC/CXX point here). Also copy the libc++/libunwind runtime .so
+    # to /usr/lib64 so the linker + loader find them and auditwheel bundles them.
     "wget -q https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz -O /tmp/llvm.tar.xz",
-    "mkdir -p /tmp/llvm && tar -xf /tmp/llvm.tar.xz -C /tmp/llvm --wildcards '*/libc++.so*' '*/libc++abi.so*' '*/libunwind.so*'",
-    "find /tmp/llvm \\( -name 'libc++.so*' -o -name 'libc++abi.so*' -o -name 'libunwind.so*' \\) -exec cp -P {} /usr/lib64/ \\; && ldconfig",
+    "mkdir -p /opt/llvm && tar -xf /tmp/llvm.tar.xz -C /opt/llvm --strip-components=1",
+    "find /opt/llvm \\( -name 'libc++.so*' -o -name 'libc++abi.so*' -o -name 'libunwind.so*' \\) -exec cp -P {} /usr/lib64/ \\; && ldconfig",
     # Prebuilt EGL-enabled Filament (Google's prebuilt is GLX-only and cannot
     # render headless). One artifact serves BOTH GL and Vulkan modules. Because
     # the release lives on a PRIVATE repo, it is fetched + extracted by the
