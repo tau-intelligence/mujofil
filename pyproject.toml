@@ -99,11 +99,13 @@ before-all = [
     "wget -q https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz -O /tmp/llvm.tar.xz",
     "mkdir -p /tmp/llvm && tar -xf /tmp/llvm.tar.xz -C /tmp/llvm --wildcards '*/libc++.so*' '*/libc++abi.so*' '*/libunwind.so*'",
     "find /tmp/llvm \\( -name 'libc++.so*' -o -name 'libc++abi.so*' -o -name 'libunwind.so*' \\) -exec cp -P {} /usr/lib64/ \\; && ldconfig",
-    # Download our prebuilt EGL-enabled Filament (Google's prebuilt is GLX-only
-    # and cannot render headless). One artifact serves BOTH GL and Vulkan modules
-    # and is built from the same source + patches in packaging/. If the download
-    # fails the CMake build falls back to building Filament from source.
-    "mkdir -p /project/_filament_egl && (wget -q https://github.com/tau-intelligence/mujofil-warp/releases/download/filament-egl-v1.56.3/filament-egl-v1.56.3-linux-x86_64.tgz -O /tmp/filament-egl.tgz && tar -xzf /tmp/filament-egl.tgz -C /project/_filament_egl --strip-components=1) || rm -rf /project/_filament_egl",
+    # Prebuilt EGL-enabled Filament (Google's prebuilt is GLX-only and cannot
+    # render headless). One artifact serves BOTH GL and Vulkan modules. Because
+    # the release lives on a PRIVATE repo, it is fetched + extracted by the
+    # authenticated 'Fetch prebuilt EGL Filament' workflow step on the host and
+    # copied into the container at /project/_filament_egl (FILAMENT_DIR). The
+    # check below fails fast if that step did not run.
+    "test -d /project/_filament_egl/include || { echo 'FILAMENT_DIR /project/_filament_egl missing — host download step did not run'; exit 1; }",
 ]
 # auditwheel bundles libc++/libc++abi/libunwind, but MUST NOT bundle the driver,
 # GL, EGL or Vulkan libs -- those are provided by the user's system/driver at
