@@ -51,6 +51,7 @@ sdist.include = [
     "third_party/dlpack",
     "third_party/bluevk",
     "third_party/utils_include",
+    "third_party/mujoco/include",
     "mujofil_warp/materials",
     "packaging/build_filament_egl.sh",
     "packaging/filament-patches",

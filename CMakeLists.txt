@@ -103,21 +103,29 @@ set(FILAMENT_LIBS
     ktxreader basis_transcoder dracodec stb uberzlib zstd vkshaders)
 
 # ============================================================================
-# MuJoCo headers — from the pip `mujoco` package (no install of libmujoco; the
-# bindings only read mjModel/mjData via pointers). `mujoco` is a runtime dep.
+# MuJoCo headers — VENDORED (third_party/mujoco/include, Apache-2.0). The bindings
+# only read mjModel/mjData via pointers and call no MuJoCo functions, so we never
+# link or ship libmujoco; `mujoco` stays a pure RUNTIME pip dependency. Vendoring
+# the headers means the BUILD needs no `mujoco` install (build isolation has none).
+# Falls back to a pip `mujoco` install if the vendored copy is absent.
 # ============================================================================
 if(NOT Python_EXECUTABLE)
     find_package(Python COMPONENTS Interpreter REQUIRED)
 endif()
 if(NOT MUJOCO_INCLUDE_DIR)
-    execute_process(
-        COMMAND "${Python_EXECUTABLE}" -c
-            "import os,mujoco;print(os.path.join(os.path.dirname(mujoco.__file__),'include'))"
-        OUTPUT_VARIABLE MUJOCO_INCLUDE_DIR OUTPUT_STRIP_TRAILING_WHITESPACE
-        RESULT_VARIABLE _mj_rc)
-    if(NOT _mj_rc EQUAL 0 OR NOT EXISTS "${MUJOCO_INCLUDE_DIR}/mujoco/mujoco.h")
-        message(FATAL_ERROR "Could not locate MuJoCo headers via pip `mujoco`. "
-            "Install it (pip install mujoco) or pass -DMUJOCO_INCLUDE_DIR=...")
+    if(EXISTS "${CMAKE_SOURCE_DIR}/third_party/mujoco/include/mujoco/mujoco.h")
+        set(MUJOCO_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/third_party/mujoco/include")
+    else()
+        execute_process(
+            COMMAND "${Python_EXECUTABLE}" -c
+                "import os,mujoco;print(os.path.join(os.path.dirname(mujoco.__file__),'include'))"
+            OUTPUT_VARIABLE MUJOCO_INCLUDE_DIR OUTPUT_STRIP_TRAILING_WHITESPACE
+            RESULT_VARIABLE _mj_rc)
+        if(NOT _mj_rc EQUAL 0 OR NOT EXISTS "${MUJOCO_INCLUDE_DIR}/mujoco/mujoco.h")
+            message(FATAL_ERROR "MuJoCo headers not found (vendored copy missing and "
+                "pip `mujoco` not importable). Restore third_party/mujoco/include or "
+                "pass -DMUJOCO_INCLUDE_DIR=...")
+        endif()
     endif()
 endif()
 message(STATUS "MuJoCo headers: ${MUJOCO_INCLUDE_DIR}")
