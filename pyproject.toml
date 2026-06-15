@@ -106,6 +106,10 @@ before-all = [
     "wget -q https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz -O /tmp/llvm.tar.xz",
     "mkdir -p /opt/llvm && tar -xf /tmp/llvm.tar.xz -C /opt/llvm --strip-components=1",
     "find /opt/llvm \\( -name 'libc++.so*' -o -name 'libc++abi.so*' -o -name 'libunwind.so*' \\) -exec cp -P {} /usr/lib64/ \\; && ldconfig",
+    # The LLVM 18 ubuntu-18.04 clang binary links libtinfo.so.5, but AlmaLinux 9
+    # ships libtinfo.so.6 -> 'cannot open libtinfo.so.5'. Provide a compat symlink
+    # (install ncurses-compat-libs first if available, else symlink so.6).
+    "dnf install -y ncurses-compat-libs || true; [ -e /usr/lib64/libtinfo.so.5 ] || ln -s $(ls /usr/lib64/libtinfo.so.6* | head -1) /usr/lib64/libtinfo.so.5; ldconfig",
     # Prebuilt EGL-enabled Filament (Google's prebuilt is GLX-only and cannot
     # render headless). One artifact serves BOTH GL and Vulkan modules. Because
     # the release lives on a PRIVATE repo, it is fetched + extracted by the
