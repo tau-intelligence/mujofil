@@ -127,13 +127,21 @@ private:
                           bool has_mat = false, float mat_metallic = 0.0f,
                           float mat_roughness = 0.5f);
 
-    /// Create mesh geometry from MuJoCo mesh data.
-    void create_mesh(const mjModel* model, int geom_id, int mesh_id);
+    /// Create mesh geometry from MuJoCo mesh data. Honors the geom's MuJoCo
+    /// material (metallic/roughness/color) when has_mat is set.
+    void create_mesh(const mjModel* model, int geom_id, int mesh_id,
+                     const float* rgba, bool has_mat = false,
+                     float mat_metallic = 0.0f, float mat_roughness = 0.5f);
 
     /// Build a sphere vertex/index buffer.
     void build_sphere(float radius, int slices, int stacks,
                       std::vector<float>& vertices,
                       std::vector<uint32_t>& indices);
+
+    /// Build an ellipsoid (per-axis scaled sphere) vertex/index buffer.
+    void build_ellipsoid(float rx, float ry, float rz, int slices, int stacks,
+                         std::vector<float>& vertices,
+                         std::vector<uint32_t>& indices);
 
     /// Build a box vertex/index buffer.
     void build_box(float hx, float hy, float hz,

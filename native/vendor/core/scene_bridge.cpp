@@ -77,20 +77,30 @@ void SceneBridge::create_geom(const mjModel* model, int geom_id) {
         mat_color = model->mat_rgba + matid * 4;
     }
 
-    // Render MuJoCo primitive geoms directly. The GLB-based warehouse only used
-    // the plane from MuJoCo (everything else came from GLBs), but primitive
-    // scenes (e.g. MJWarp worlds) need box/sphere/capsule/cylinder too.
+    // Render MuJoCo geoms directly so a standard MJCF (primitives AND mesh
+    // assets) renders without needing pre-converted GLBs. Mesh geometry is read
+    // straight from the compiled mjModel mesh buffers.
     switch (geom_type) {
         case mjGEOM_PLANE:
         case mjGEOM_SPHERE:
         case mjGEOM_BOX:
         case mjGEOM_CAPSULE:
         case mjGEOM_CYLINDER:
+        case mjGEOM_ELLIPSOID:
             create_primitive(geom_id, geom_type, geom_size, mat_color,
                              has_mat, mat_metallic, mat_roughness);
             break;
+        case mjGEOM_MESH: {
+            // geom_dataid indexes into the model's mesh arrays.
+            int mesh_id = model->geom_dataid[geom_id];
+            if (mesh_id >= 0) {
+                create_mesh(model, geom_id, mesh_id, mat_color,
+                            has_mat, mat_metallic, mat_roughness);
+            }
+            break;
+        }
         default:
-            // mesh / ellipsoid / hfield etc. still come from GLBs when used
+            // hfield / sdf etc. are not yet supported natively.
             break;
     }
 }
@@ -105,6 +115,10 @@ void SceneBridge::create_primitive(int geom_id, int geom_type,
     switch (geom_type) {
         case mjGEOM_SPHERE:
             build_sphere(size[0], SPHERE_SLICES, SPHERE_STACKS, vertices, indices);
+            break;
+        case mjGEOM_ELLIPSOID:
+            build_ellipsoid(size[0], size[1], size[2], SPHERE_SLICES,
+                            SPHERE_STACKS, vertices, indices);
             break;
         case mjGEOM_BOX:
             build_box(size[0], size[1], size[2], vertices, indices);
@@ -181,43 +195,81 @@ void SceneBridge::create_primitive(int geom_id, int geom_type,
     geom_renderables_.push_back(std::move(renderable));
 }
 
-void SceneBridge::create_mesh(const mjModel* model, int geom_id, int mesh_id) {
-    // Extract mesh data from MuJoCo
+void SceneBridge::create_mesh(const mjModel* model, int geom_id, int mesh_id,
+                              const float* rgba, bool has_mat,
+                              float mat_metallic, float mat_roughness) {
+    // MuJoCo stores mesh data in shared arrays, addressed per mesh. Crucially,
+    // vertices and normals have INDEPENDENT counts/indices: faces index vertices
+    // via mesh_face and normals via mesh_facenormal (which may differ). So we
+    // expand to a non-indexed (per-face-corner) buffer to get correct normals
+    // regardless of how MuJoCo deduplicated them.
     int vert_start = model->mesh_vertadr[mesh_id];
-    int vert_count = model->mesh_vertnum[mesh_id];
+    int norm_start = model->mesh_normaladr[mesh_id];
     int face_start = model->mesh_faceadr[mesh_id];
     int face_count = model->mesh_facenum[mesh_id];
 
-    if (vert_count == 0 || face_count == 0) return;
+    if (face_count == 0) return;
 
-    const float* mj_verts = model->mesh_vert + vert_start * 3;
-    const float* mj_normals = model->mesh_normal + vert_start * 3;
-    const int* mj_faces = model->mesh_face + face_start * 3;
+    const float* mj_verts = model->mesh_vert;            // (nmeshvert x 3)
+    const float* mj_normals = model->mesh_normal;        // (nmeshnormal x 3)
+    const int* mj_faces = model->mesh_face;              // (nmeshface x 3) vert idx
+    const int* mj_facenorm = model->mesh_facenormal;     // (nmeshface x 3) norm idx
+    const bool have_normals = (model->mesh_normalnum[mesh_id] > 0);
 
-    // Interleaved vertex data: position (3) + normal (3) = 6 floats per vertex
-    std::vector<float> vertices(vert_count * 6);
-    for (int i = 0; i < vert_count; ++i) {
-        vertices[i * 6 + 0] = mj_verts[i * 3 + 0];
-        vertices[i * 6 + 1] = mj_verts[i * 3 + 1];
-        vertices[i * 6 + 2] = mj_verts[i * 3 + 2];
-        vertices[i * 6 + 3] = mj_normals[i * 3 + 0];
-        vertices[i * 6 + 4] = mj_normals[i * 3 + 1];
-        vertices[i * 6 + 5] = mj_normals[i * 3 + 2];
+    // Interleaved position (3) + normal (3) = 6 floats per corner, 3 corners/face.
+    std::vector<float> vertices;
+    vertices.reserve(static_cast<size_t>(face_count) * 3 * 6);
+    std::vector<uint32_t> indices;
+    indices.reserve(static_cast<size_t>(face_count) * 3);
+
+    uint32_t out_idx = 0;
+    for (int f = 0; f < face_count; ++f) {
+        const int* fv = mj_faces + (face_start + f) * 3;
+        const int* fn = mj_facenorm + (face_start + f) * 3;
+
+        // Compute a geometric face normal as a fallback (and for meshes without
+        // stored normals). Vertices are local indices within this mesh.
+        const float* p0 = mj_verts + (vert_start + fv[0]) * 3;
+        const float* p1 = mj_verts + (vert_start + fv[1]) * 3;
+        const float* p2 = mj_verts + (vert_start + fv[2]) * 3;
+        float e1x = p1[0]-p0[0], e1y = p1[1]-p0[1], e1z = p1[2]-p0[2];
+        float e2x = p2[0]-p0[0], e2y = p2[1]-p0[1], e2z = p2[2]-p0[2];
+        float fnx = e1y*e2z - e1z*e2y;
+        float fny = e1z*e2x - e1x*e2z;
+        float fnz = e1x*e2y - e1y*e2x;
+        float flen = std::sqrt(fnx*fnx + fny*fny + fnz*fnz);
+        if (flen > 1e-12f) { fnx/=flen; fny/=flen; fnz/=flen; }
+        else { fnx=0; fny=0; fnz=1; }
+
+        for (int k = 0; k < 3; ++k) {
+            const float* p = mj_verts + (vert_start + fv[k]) * 3;
+            vertices.push_back(p[0]);
+            vertices.push_back(p[1]);
+            vertices.push_back(p[2]);
+            if (have_normals) {
+                const float* nrm = mj_normals + (norm_start + fn[k]) * 3;
+                vertices.push_back(nrm[0]);
+                vertices.push_back(nrm[1]);
+                vertices.push_back(nrm[2]);
+            } else {
+                vertices.push_back(fnx);
+                vertices.push_back(fny);
+                vertices.push_back(fnz);
+            }
+            indices.push_back(out_idx++);
+        }
     }
 
-    std::vector<uint32_t> indices(face_count * 3);
-    for (int i = 0; i < face_count * 3; ++i) {
-        indices[i] = static_cast<uint32_t>(mj_faces[i]);
+    // PBR properties: honor a real MuJoCo material; otherwise a sensible matte
+    // default that suits most robot/object meshes.
+    float roughness = 0.5f, metallic = 0.0f, reflectance = 0.5f;
+    if (has_mat) {
+        roughness = mat_roughness;
+        metallic = mat_metallic;
     }
-
-    const float* geom_rgba = model->geom_rgba + geom_id * 4;
-    // YCB objects: slightly rough, non-metallic
     auto* mat_inst = material_manager_->create_pbr_instance(
-        geom_rgba[0], geom_rgba[1], geom_rgba[2], geom_rgba[3],
-        0.4f,   // roughness
-        0.0f,   // metallic
-        0.5f    // reflectance
-    );
+        rgba[0], rgba[1], rgba[2], rgba[3],
+        roughness, metallic, reflectance);
 
     auto renderable = create_renderable(vertices, indices, mat_inst, geom_id);
     renderable.mj_geom_type = mjGEOM_MESH;
@@ -715,6 +767,53 @@ void SceneBridge::build_sphere(float radius, int slices, int stacks,
             vertices.push_back(radius * ny);
             vertices.push_back(radius * nz);
             // normal
+            vertices.push_back(nx);
+            vertices.push_back(ny);
+            vertices.push_back(nz);
+        }
+    }
+
+    for (int i = 0; i < stacks; ++i) {
+        for (int j = 0; j < slices; ++j) {
+            uint32_t a = i * (slices + 1) + j;
+            uint32_t b = a + slices + 1;
+            indices.push_back(a);
+            indices.push_back(b);
+            indices.push_back(a + 1);
+            indices.push_back(a + 1);
+            indices.push_back(b);
+            indices.push_back(b + 1);
+        }
+    }
+}
+
+void SceneBridge::build_ellipsoid(float rx, float ry, float rz, int slices,
+                                  int stacks, std::vector<float>& vertices,
+                                  std::vector<uint32_t>& indices) {
+    vertices.clear();
+    indices.clear();
+
+    for (int i = 0; i <= stacks; ++i) {
+        float phi = M_PI * static_cast<float>(i) / static_cast<float>(stacks);
+        float sp = std::sin(phi), cp = std::cos(phi);
+
+        for (int j = 0; j <= slices; ++j) {
+            float theta = 2.0f * M_PI * static_cast<float>(j) / static_cast<float>(slices);
+            float st = std::sin(theta), ct = std::cos(theta);
+
+            // Unit-sphere direction.
+            float ux = sp * ct, uy = sp * st, uz = cp;
+            // Scaled position.
+            vertices.push_back(rx * ux);
+            vertices.push_back(ry * uy);
+            vertices.push_back(rz * uz);
+            // Correct ellipsoid normal = normalize(u / r^2) (inverse-transpose).
+            float nx = ux / (rx * rx);
+            float ny = uy / (ry * ry);
+            float nz = uz / (rz * rz);
+            float nl = std::sqrt(nx*nx + ny*ny + nz*nz);
+            if (nl > 1e-12f) { nx/=nl; ny/=nl; nz/=nl; }
+            else { nx=0; ny=0; nz=1; }
             vertices.push_back(nx);
             vertices.push_back(ny);
             vertices.push_back(nz);

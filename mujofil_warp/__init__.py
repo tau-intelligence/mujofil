@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 import sys
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 # Locate the native modules. When installed (pip), the compiled
 # _mujofil_warp_gl / _mujofil_warp .so live INSIDE this package directory. In a
@@ -92,7 +92,7 @@ def make_config(
     bloom: bool = False,
     fxaa: bool = False,
     # --- tone mapping / exposure ---
-    exposure: float = 1.0,
+    exposure: float = 0.0,
     tone_mapping: bool = True,
     dithering: bool = True,
 ) -> "RendererConfig":

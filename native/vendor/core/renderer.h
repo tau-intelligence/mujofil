@@ -39,7 +39,7 @@ struct RendererConfig {
     bool enable_msaa = true;
     uint8_t msaa_samples = 4;
     bool enable_shadows = true;
-    float exposure = 1.0f;
+    float exposure = 0.0f;     // Exposure compensation (EV); 0 = neutral
     bool tone_mapping = true;
     bool dithering = true;
     uint32_t batch_size = 1;   // # of swapchain images for batched rendering

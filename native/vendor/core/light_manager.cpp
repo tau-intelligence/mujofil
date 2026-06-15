@@ -26,11 +26,12 @@ void LightManager::setup_default_lighting() {
     }
     light_entities_.clear();
 
-    // Primary overhead light — mimics warehouse ceiling lamps
+    // Primary overhead light — soft key light for general MuJoCo scenes.
+    // (The warehouse loads its own IBL + spotlights and is unaffected.)
     sun_entity_ = add_directional_light(
         -0.1f, -0.1f, -1.0f,
         1.0f, 0.97f, 0.92f,
-        25000.0f,
+        11000.0f,
         true
     );
 
@@ -38,7 +39,7 @@ void LightManager::setup_default_lighting() {
     add_directional_light(
         0.5f, 0.3f, -0.6f,
         0.85f, 0.88f, 1.0f,
-        4000.0f,
+        2500.0f,
         false
     );
 
@@ -58,7 +59,7 @@ void LightManager::setup_default_lighting() {
 
         indirect_light_ = filament::IndirectLight::Builder()
             .irradiance(3, bands.data())
-            .intensity(8000.0f)
+            .intensity(5000.0f)
             .build(*engine_);
 
         scene_->setIndirectLight(indirect_light_);
