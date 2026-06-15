@@ -100,7 +100,9 @@ before-all = [
     # The static libcudart_static.a + libculibos.a + headers ship in the -devel
     # package (there is no separate cuda-cudart-static-NN-N package on RHEL9).
     "wget -q https://developer.download.nvidia.com/compute/cuda/repos/rhel9/x86_64/cuda-rhel9.repo -O /etc/yum.repos.d/cuda.repo",
-    "dnf install -y cuda-cudart-devel-12-0 cuda-driver-devel-12-0 cuda-crt-12-0 cuda-nvcc-12-0",
+    # cuda_runtime.h needs crt/host_config.h, which is NOT in cuda-cudart-devel;
+    # cuda-nvcc provides the crt/ headers.
+    "dnf install -y cuda-cudart-devel-12-0 cuda-driver-devel-12-0 cuda-nvcc-12-0",
     # Full LLVM 18.1.8 toolchain (glibc 2.17 build): provides clang++ AND its
     # bundled libc++ headers + runtime as one consistent set. Extract to
     # /opt/llvm (CC/CXX point here). Also copy the libc++/libunwind runtime .so
