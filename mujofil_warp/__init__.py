@@ -14,7 +14,11 @@ import os
 import sys
 import weakref
 
-__version__ = "0.1.3"
+try:  # single source of truth = the installed wheel's metadata (pyproject version)
+    from importlib.metadata import version as _pkg_version
+    __version__ = _pkg_version("mujofil-warp")
+except Exception:  # editable/source checkout without metadata
+    __version__ = "0.1.5"
 
 # Live renderers, closed deterministically at interpreter exit so the native
 # Filament/CUDA teardown runs while the interpreter is healthy -- not during the
