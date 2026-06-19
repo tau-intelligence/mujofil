@@ -146,6 +146,9 @@ backend keeps it constant.
 | **Shadows invisible** | Ambient/IBL too high | Lower ambient; use an oblique key with `cast_shadows=True`. |
 | Throughput lower than expected | SSAO on | Use `preset="train"` (SSAO off, ~2×) for observations. |
 | `render_batch` raises a size error | `len(datas)` > `batch_size` | Construct with `batch_size ≥ N`. |
+| `cam_id=N is out of range` / `model defines no <camera>` | Asked for a fixed camera the MJCF doesn't have | Add a `<camera>` to the model, or use a **free camera**: `cam_id=-1` + `set_free_camera(...)`. |
+| `CUDA error: no kernel image is available` | `torch` build doesn't match the GPU arch | Blackwell (sm_120 / RTX 50xx) needs **cu128** torch — see [Installation → PyTorch](../README.md#pytorch-zero-copy-target). |
+| Sim explodes / contacts dropped at large N | `njmax`/`nconmax` too small for the batch | These are sized in `mjw.make_data(mjm, nworld=N)` and are **per-world budgets shared across the batch** — raise `mjm.opt`/model contact limits (or `nconmax`/`njmax` on the warp model) for contact-heavy scenes; under-sizing silently drops contacts. Renders are unaffected; the *physics* is. |
 
 For what each feature costs, see [features.md](features.md). For the zero-copy
 internals, see [ARCHITECTURE.md](ARCHITECTURE.md).

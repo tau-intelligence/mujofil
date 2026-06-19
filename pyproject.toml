@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "mujofil-warp"
-version = "0.1.3"
+version = "0.1.4"
 description = "Photoreal Filament PBR rendering for GPU-resident MuJoCo (MJWarp), zero-copy to PyTorch"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -31,7 +31,9 @@ examples = ["pillow"]
 # Asset tooling: convert USD / GLB environments into a visual GLB + a MuJoCo
 # collision MJCF (mujofil_warp.tools.usd_to_assets / glb_to_collision). Heavy
 # deps, so kept optional -- only with `pip install "mujofil-warp[usd]"`.
-usd = ["usd-core>=23.0", "trimesh>=4.0", "pillow", "numpy"]
+# Self-pin to this exact version so the resolver can't backtrack to an older
+# mujofil-warp that lacks the [usd] extra.
+usd = ["mujofil-warp==0.1.4", "usd-core>=23.0", "trimesh>=4.0", "pillow", "numpy"]
 
 [project.scripts]
 mujofil-warp-usd-to-assets = "mujofil_warp.tools.usd_to_assets:main"

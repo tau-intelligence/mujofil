@@ -55,6 +55,29 @@ def _xform_matrix(col_major16):
     return m
 
 
+def _scene_parts(scene):
+    """Per-geometry parts of a trimesh Scene, baked into world space.
+
+    Replaces the deprecated ``Scene.dump(concatenate=False)`` (removed in trimesh
+    2025) with the documented graph-walk equivalent, which applies each node's
+    world transform. Falls back to ``dump`` on older trimesh; a plain Trimesh is
+    returned as a single part."""
+    if not isinstance(scene, trimesh.Scene):
+        return [scene]
+    parts = []
+    try:
+        for node in scene.graph.nodes_geometry:
+            T, gname = scene.graph[node]
+            g = scene.geometry[gname].copy()
+            g.apply_transform(T)
+            parts.append(g)
+        if parts:
+            return parts
+    except Exception:
+        pass
+    return scene.dump(concatenate=False)  # legacy fallback
+
+
 def _load_world_mesh(glb_path, M):
     """Load a GLB as one mesh, baked into world space by the visual transform."""
     g = trimesh.load(glb_path, force="mesh", process=False)
@@ -79,7 +102,11 @@ def _detect_floor_z(v, faces, center=(0.0, 0.0), base_z=0.0, footprint_r=1.2):
             return max(zs)  # topmost surface below the start point = the floor
     except Exception:
         pass
-    # fallback: area-weighted dominant up-facing height near the robot footprint
+    # fallback: lowest SIGNIFICANT up-facing surface near the robot footprint.
+    # (Was: the single densest up-facing height -- but on a multi-level scene a
+    # mezzanine can carry more geometry than the ground, so "densest" latched
+    # onto the wrong, elevated level. We instead take the LOWEST height cluster
+    # that still has meaningful area, which is the actual ground floor.)
     tri = v[faces]
     a, b, c = tri[:, 0], tri[:, 1], tri[:, 2]
     n = np.cross(b - a, c - a)
@@ -95,7 +122,12 @@ def _detect_floor_z(v, faces, center=(0.0, 0.0), base_z=0.0, footprint_r=1.2):
     lo, hi = float(h.min()), float(h.max())
     bins = np.linspace(lo, hi + 1e-4, max(20, int((hi - lo) / 0.02) + 1))
     hist, edges = np.histogram(h, bins=bins, weights=w)
-    i = int(hist.argmax())
+    if hist.max() <= 0:
+        return lo
+    # the lowest bin whose area is a meaningful fraction of the biggest cluster
+    # = the ground floor (not a denser-but-higher mezzanine).
+    significant = hist >= 0.15 * hist.max()
+    i = int(np.argmax(significant))  # argmax of a bool array = first True
     return float((edges[i] + edges[i + 1]) / 2)
 
 
@@ -127,9 +159,15 @@ def _obb_world(part, M):
 def build_mjcf(glb_path, M, name, out_dir, walls=True, props=True, ceiling=False,
                wall_thick=0.2, friction=(1.0, 0.005, 0.0001),
                prop_min_vol=0.01, prop_max_extent=6.0, max_props=80,
-               robot_clear_xy=0.45, robot_clear_z=1.4):
+               robot_clear_xy=0.45, robot_clear_z=1.4, floor_z=None):
     v, faces = _load_world_mesh(glb_path, M)
-    floor_z = _detect_floor_z(v, faces)
+    # ``floor_z`` lets the caller pin the ground plane height for scenes where the
+    # auto-detector (raycast + lowest-significant-surface) can't be trusted
+    # (e.g. multi-level/mezzanine GLBs). None = auto-detect.
+    if floor_z is None:
+        floor_z = _detect_floor_z(v, faces)
+    else:
+        floor_z = float(floor_z)
     bmin, bmax = _world_bounds(v)
     cx, cy = (bmin[0] + bmax[0]) / 2, (bmin[1] + bmax[1]) / 2
     sx, sy = (bmax[0] - bmin[0]) / 2, (bmax[1] - bmin[1]) / 2
@@ -183,7 +221,7 @@ def build_mjcf(glb_path, M, name, out_dir, walls=True, props=True, ceiling=False
     n_props = 0
     if props:
         scene = trimesh.load(glb_path, process=False)
-        parts = scene.dump(concatenate=False) if isinstance(scene, trimesh.Scene) else [scene]
+        parts = _scene_parts(scene)
         scene_vol = float((bmax[0]-bmin[0]) * (bmax[1]-bmin[1]) * max(top_z-floor_z, 0.1))
         for idx, part in enumerate(parts):
             if len(part.faces) < 4 or n_props >= max_props:
@@ -281,6 +319,9 @@ def main():
     ap.add_argument("--no-walls", dest="walls", action="store_false")
     ap.add_argument("--no-props", dest="props", action="store_false")
     ap.add_argument("--ceiling", action="store_true")
+    ap.add_argument("--floor-z", type=float, default=None,
+                    help="pin the ground-plane Z (skip auto-detect; useful for "
+                         "multi-level scenes where detection picks a mezzanine)")
     ap.set_defaults(walls=True, props=True)
     args = ap.parse_args()
 
@@ -305,7 +346,7 @@ def main():
         name = args.name or os.path.splitext(os.path.basename(glb))[0]
 
     build_mjcf(glb, M, name, args.out, walls=args.walls, props=args.props,
-               ceiling=args.ceiling)
+               ceiling=args.ceiling, floor_z=args.floor_z)
 
 
 if __name__ == "__main__":

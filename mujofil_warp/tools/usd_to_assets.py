@@ -47,6 +47,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import os
 import sys
@@ -61,6 +62,34 @@ except Exception as exc:  # pragma: no cover - clear message if pxr missing
         "OpenUSD Python bindings (pxr) are required for USD import.\n"
         "Install with:  pip install usd-core\n"
         f"(import error: {exc})")
+
+
+@contextlib.contextmanager
+def _quiet_usd():
+    """Silence pxr's noisy C++-level stderr (e.g. dozens of 'Found material
+    bindings ... but MaterialBindingAPI is not applied' warnings) at the file-
+    descriptor level, since they bypass Python's logging. Set USD_TO_ASSETS_VERBOSE=1
+    to keep them. Real Python exceptions still propagate."""
+    if os.environ.get("USD_TO_ASSETS_VERBOSE"):
+        yield
+        return
+    try:
+        saved = os.dup(2)
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, 2)
+        os.close(devnull)
+    except Exception:
+        yield
+        return
+    try:
+        yield
+    finally:
+        try:
+            os.dup2(saved, 2)
+            os.close(saved)
+        except Exception:
+            pass
+
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 try:
@@ -646,7 +675,7 @@ def _nearest_rigid_body(prim):
 # top-level conversion                                                         #
 # --------------------------------------------------------------------------- #
 def convert(usd_path, name, out_dir, movable=True, fallback_obb=True, kind="auto",
-            max_tile=None):
+            max_tile=None, floor_z=None):
     warnings: list[str] = []
 
     # Texture-tile size cap baked into the GLB (see _TEXTURE_MAX_TILE). <=0 = no cap.
@@ -666,18 +695,22 @@ def convert(usd_path, name, out_dir, movable=True, fallback_obb=True, kind="auto
     N = _up_axis_matrix(stage)
 
     # ---- gather prims -----------------------------------------------------
+    # Silence pxr's C++-level material-binding warnings (a flood on Omniverse
+    # scenes); the converter reports real problems via warn()/stdout, which the
+    # fd-2 suppression does not touch. Set USD_TO_ASSETS_VERBOSE=1 to keep them.
     render_meshes, colliders = [], []
-    for prim in stage.Traverse():
-        if not prim.IsA(UsdGeom.Imageable):
-            continue
-        purpose = UsdGeom.Imageable(prim).ComputePurpose()
-        is_collider = prim.HasAPI(UsdPhysics.CollisionAPI)
-        # visual: render/default purpose meshes that are NOT pure proxies
-        if prim.IsA(UsdGeom.Mesh) and purpose != UsdGeom.Tokens.proxy \
-                and purpose != UsdGeom.Tokens.guide:
-            render_meshes.append(prim)
-        if is_collider:
-            colliders.append(prim)
+    with _quiet_usd():
+        for prim in stage.Traverse():
+            if not prim.IsA(UsdGeom.Imageable):
+                continue
+            purpose = UsdGeom.Imageable(prim).ComputePurpose()
+            is_collider = prim.HasAPI(UsdPhysics.CollisionAPI)
+            # visual: render/default purpose meshes that are NOT pure proxies
+            if prim.IsA(UsdGeom.Mesh) and purpose != UsdGeom.Tokens.proxy \
+                    and purpose != UsdGeom.Tokens.guide:
+                render_meshes.append(prim)
+            if is_collider:
+                colliders.append(prim)
 
     # ---- VISUAL: build GLB (static backdrop) + collect movable visuals ----
     # A render mesh under a RigidBodyAPI is a MOVABLE object: it must NOT be baked
@@ -690,28 +723,29 @@ def convert(usd_path, name, out_dir, movable=True, fallback_obb=True, kind="auto
     scene = trimesh.Scene()
     n_vis = 0
     movable_visuals: dict = {}   # rb_path(str) -> [(trimesh_world, pbr_material), ...]
-    for prim in render_meshes:
-        rb = _nearest_rigid_body(prim) if movable else None
-        res = _mesh_to_trimesh(prim, N, with_attrs=True)
-        if res is None:
-            continue
-        tm, uv = res
-        try:
-            mat, udim = _pbr_from_prim(prim, warn)
-        except Exception as exc:
-            mat, udim = None, (1, 1)
-            warn(f"material read failed on {prim.GetPath()}: {exc}")
-        if uv is not None and udim != (1, 1):
-            uv = uv / np.array([udim[0], udim[1]], dtype=np.float64)
-        if mat is not None and uv is not None:
-            tm.visual = trimesh.visual.TextureVisuals(uv=uv, material=mat)
-        elif mat is not None:
-            tm.visual.material = mat
-        if rb is not None:
-            movable_visuals.setdefault(str(rb.GetPath()), []).append((tm, mat))
-        else:
-            scene.add_geometry(tm, node_name=prim.GetPath().name)
-            n_vis += 1
+    with _quiet_usd():
+        for prim in render_meshes:
+            rb = _nearest_rigid_body(prim) if movable else None
+            res = _mesh_to_trimesh(prim, N, with_attrs=True)
+            if res is None:
+                continue
+            tm, uv = res
+            try:
+                mat, udim = _pbr_from_prim(prim, warn)
+            except Exception as exc:
+                mat, udim = None, (1, 1)
+                warn(f"material read failed on {prim.GetPath()}: {exc}")
+            if uv is not None and udim != (1, 1):
+                uv = uv / np.array([udim[0], udim[1]], dtype=np.float64)
+            if mat is not None and uv is not None:
+                tm.visual = trimesh.visual.TextureVisuals(uv=uv, material=mat)
+            elif mat is not None:
+                tm.visual.material = mat
+            if rb is not None:
+                movable_visuals.setdefault(str(rb.GetPath()), []).append((tm, mat))
+            else:
+                scene.add_geometry(tm, node_name=prim.GetPath().name)
+                n_vis += 1
     if n_vis:
         scene.export(glb_path)
     else:
@@ -745,7 +779,7 @@ def convert(usd_path, name, out_dir, movable=True, fallback_obb=True, kind="auto
         if glb_path is None:
             raise SystemExit("no authored collision and no GLB to approximate from")
         warn("no UsdPhysics colliders authored - falling back to OBB baker on the GLB")
-        return _finish_obb_fallback(glb_path, name, out_dir, warnings, kind)
+        return _finish_obb_fallback(glb_path, name, out_dir, warnings, kind, floor_z)
 
     xml = _assemble_mjcf(name, static_lines, body_blocks, asset_meshes,
                          meshes_dir, movable, CFLAGS, movable_visuals)
@@ -982,7 +1016,7 @@ def _assemble_mjcf(name, static_lines, body_blocks, asset_meshes, meshes_dir,
     )
 
 
-def _finish_obb_fallback(glb_path, name, out_dir, warnings, kind="auto"):
+def _finish_obb_fallback(glb_path, name, out_dir, warnings, kind="auto", floor_z=None):
     """Approximate collision from the GLB when the USD authored none.
 
     A *scene/stage* (warehouse) gets floor + walls + per-prop OBBs (the existing
@@ -997,7 +1031,7 @@ def _finish_obb_fallback(glb_path, name, out_dir, warnings, kind="auto"):
         # a room/stage is large and floor-like; a prop is small & compact
         kind = "scene" if horiz > 6.0 else "prop"
     if kind == "scene":
-        xml_path = _obb_build_mjcf(glb_path, M, name, out_dir)
+        xml_path = _obb_build_mjcf(glb_path, M, name, out_dir, floor_z=floor_z)
     else:
         xml_path = _single_obb_mjcf(glb_path, name, out_dir)
     return glb_path, xml_path, warnings
@@ -1071,11 +1105,16 @@ def main():
                     help="cap (px) for the longest side of each baked texture tile; "
                          "raise for hero fidelity, lower for tiny GLBs, 0 = no cap "
                          "(default 1024)")
+    ap.add_argument("--floor-z", type=float, default=None,
+                    help="pin the OBB-fallback ground-plane height (metres) instead "
+                         "of auto-detecting; use for multi-level/mezzanine scenes "
+                         "where auto-detect latches onto an upper floor")
     ap.set_defaults(movable=True, fallback_obb=True)
     args = ap.parse_args()
     name = args.name or os.path.splitext(os.path.basename(args.usd))[0]
     convert(args.usd, name, args.out, movable=args.movable,
-            fallback_obb=args.fallback_obb, kind=args.kind, max_tile=args.max_tile)
+            fallback_obb=args.fallback_obb, kind=args.kind, max_tile=args.max_tile,
+            floor_z=args.floor_z)
 
 
 if __name__ == "__main__":

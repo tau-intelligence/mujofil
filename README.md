@@ -166,6 +166,21 @@ calls), a single wheel is portable across GPUs and driver versions:
 Not yet supported: aarch64 (Jetson/Grace), glibc < 2.34 (Ubuntu 20.04 / RHEL 8),
 non-NVIDIA GPUs. These need a from-source Filament build (planned).
 
+### PyTorch (zero-copy target)
+
+`torch` is an **optional** dependency (`pip install "mujofil-warp[torch]"`), and
+**you must install a build that matches your GPU's compute capability** — the
+zero-copy DLPack handoff runs CUDA kernels through your torch, not ours.
+
+- **Blackwell (RTX 50-series / sm_120, e.g. 5090):** install the **CUDA 12.8**
+  torch — `pip install torch --index-url https://download.pytorch.org/whl/cu128`.
+  A `torch+cu124` (or older) build has no sm_120 kernels and fails at runtime with
+  `CUDA error: no kernel image is available for execution on the device`.
+- **Ada / Hopper / Ampere (sm_80–sm_90):** the default `cu124` torch is fine.
+
+`warp-lang` and `mujoco-warp` JIT-compile for the local GPU, so they need no such
+pinning — only torch ships prebuilt device code.
+
 ### Headless / display
 
 Both backends are **fully headless** — no X server, no display, nothing extra to

@@ -9,10 +9,26 @@ a SEPARATE build — mujofil's PyPI release is untouched.
 """
 from __future__ import annotations
 
+import atexit
 import os
 import sys
+import weakref
 
 __version__ = "0.1.3"
+
+# Live renderers, closed deterministically at interpreter exit so the native
+# Filament/CUDA teardown runs while the interpreter is healthy -- not during the
+# unordered GC at shutdown (which can double-free and abort the process).
+_LIVE_WARP_RENDERERS: "weakref.WeakSet" = weakref.WeakSet()
+
+
+@atexit.register
+def _close_all_warp_renderers() -> None:
+    for r in list(_LIVE_WARP_RENDERERS):
+        try:
+            r.close()
+        except Exception:
+            pass
 
 # Locate the native modules. When installed (pip), the compiled
 # _mujofil_warp_gl / _mujofil_warp .so live INSIDE this package directory. In a
@@ -239,6 +255,20 @@ class WarpRenderer:
         elif preset or toggles:
             raise TypeError("pass either `config=` or keyword toggles/`preset=`, not both")
         self._r = _get_native().WarpRenderer(config)
+        _LIVE_WARP_RENDERERS.add(self)
+
+    def close(self) -> None:
+        """Release the native renderer (Filament + CUDA). Idempotent; safe to
+        call, and safe NOT to call (an atexit handler closes any that remain in a
+        deterministic order, avoiding the GC-at-shutdown teardown crash)."""
+        r = self.__dict__.pop("_r", None)
+        del r  # drop the only Python ref -> native dtor runs now, not at GC
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
     # --- scene ---
     def load_model(self, model):
@@ -275,6 +305,7 @@ class WarpRenderer:
         self._r.sync_transforms(_addr(model), _addr(data))
 
     def sync_camera(self, model, data, cam_id: int = -1):
+        _check_cam(model, cam_id)
         self._r.sync_camera(_addr(model), _addr(data), cam_id)
 
     def render(self):
@@ -289,6 +320,7 @@ class WarpRenderer:
         must have been created with config.batch_size >= len(datas).
         """
         import torch
+        _check_cam(model, cam_id)
         ptrs = [_addr(d) for d in datas]
         return torch.from_dlpack(self._r.render_batch_dlpack(_addr(model), ptrs, cam_id))
 
@@ -319,6 +351,29 @@ def _addr(obj) -> int:
     if a is not None:
         return a
     raise TypeError(f"expected mujoco struct or int address, got {type(obj)}")
+
+
+def _check_cam(model, cam_id: int):
+    """Fail with a clear message when a fixed camera is requested but the model
+    has none (or too few). MJWarp's raycaster indexes cam arrays on the GPU, so an
+    out-of-range cam_id otherwise surfaces as an opaque 'CUDA illegal access'
+    much later. cam_id < 0 = free camera (set via set_free_camera), always OK.
+    Raw int addresses can't be introspected, so they skip the check."""
+    if cam_id < 0 or isinstance(model, int):
+        return
+    ncam = getattr(model, "ncam", None)
+    if ncam is None:
+        return
+    if ncam == 0:
+        raise ValueError(
+            "render requested fixed camera cam_id={} but the MJCF defines no "
+            "<camera>. Add a <camera> to the model, or use a free camera: pass "
+            "cam_id=-1 and call set_free_camera(ex,ey,ez, tx,ty,tz).".format(cam_id))
+    if cam_id >= ncam:
+        raise ValueError(
+            "cam_id={} is out of range; the model has {} camera(s) (valid fixed "
+            "ids 0..{}). Use cam_id=-1 for a free camera.".format(
+                cam_id, ncam, ncam - 1))
 
 
 __all__ = ["WarpRenderer", "RendererConfig", "make_config", "QUALITY_PRESETS"]
