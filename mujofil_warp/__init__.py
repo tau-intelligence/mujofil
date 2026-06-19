@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 import sys
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 
 # Locate the native modules. When installed (pip), the compiled
 # _mujofil_warp_gl / _mujofil_warp .so live INSIDE this package directory. In a
@@ -73,8 +73,25 @@ def _load_native(backend: str | None = None):
     raise ValueError(f"unknown MUJOFIL_WARP_BACKEND={backend!r} (use 'gl' or 'vulkan')")
 
 
-_native = _load_native()
-RendererConfig = _native.RendererConfig
+# The native renderer module (Filament + CUDA + EGL/Vulkan) is loaded LAZILY on
+# first use, not at import time. This keeps `import mujofil_warp` -- and in
+# particular the CPU-only asset tools (`mujofil_warp.tools.*`) -- from spinning up
+# the GPU renderer (which also avoids a libpng/zlib symbol clash between the
+# native .so and trimesh's GLB exporter during USD->GLB conversion).
+_native = None
+
+
+def _get_native():
+    global _native
+    if _native is None:
+        _native = _load_native()
+    return _native
+
+
+def __getattr__(name):  # PEP 562: lazy module attribute
+    if name == "RendererConfig":
+        return _get_native().RendererConfig
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def make_config(
@@ -91,6 +108,7 @@ def make_config(
     msaa_samples: int = 4,
     bloom: bool = False,
     fxaa: bool = False,
+    ssr: bool = True,
     # --- tone mapping / exposure ---
     exposure: float = 0.0,
     tone_mapping: bool = True,
@@ -112,6 +130,8 @@ def make_config(
     - ``msaa`` / ``msaa_samples``  multi-sample anti-aliasing (2/4/8).
     - ``bloom``         HDR bloom (off by default; cheap-ish).
     - ``fxaa``          fast approximate AA (alternative to MSAA).
+    - ``ssr``           screen-space reflections on glossy surfaces (e.g. a
+                        polished floor mirrors nearby geometry).
     - ``exposure``      linear exposure multiplier before tone mapping.
     - ``tone_mapping``  FILMIC tone mapping (vs LINEAR when False).
     - ``dithering``     temporal dithering to avoid banding.
@@ -128,7 +148,7 @@ def make_config(
                 f"got {ssao_quality!r}")
     else:
         ssao_q = max(0, min(3, int(ssao_quality)))
-    cfg = RendererConfig()
+    cfg = _get_native().RendererConfig()
     cfg.width = width
     cfg.height = height
     cfg.batch_size = batch_size
@@ -140,6 +160,7 @@ def make_config(
     cfg.msaa_samples = msaa_samples
     cfg.enable_bloom = bloom
     cfg.enable_fxaa = fxaa
+    cfg.enable_ssr = ssr
     cfg.exposure = exposure
     cfg.tone_mapping = tone_mapping
     cfg.dithering = dithering
@@ -148,13 +169,26 @@ def make_config(
 
 # Named quality presets so users can reproduce our benchmark trends on their own
 # hardware. Pass to ``WarpRenderer(preset=...)``; override individual toggles too.
-#   high    -- full photoreal PBR (ULTRA SSAO + cone tracing). The default.
-#   medium  -- HIGH-quality SSAO, no cone tracing: nearly identical look, a little
-#              faster (the SSAO *pass* dominates, not its quality level).
-#   fast    -- SSAO off (~2x throughput), shadows + MSAA kept. The big lever.
-#   ultra   -- high + bloom + 8x MSAA.
-#   raw     -- no AO / shadows / AA (maximum throughput, ~3x).
+#
+# THE TWO HEADLINE PRESETS (the ones to use):
+#   eval   -- full photoreal fidelity (ULTRA SSAO + cone tracing + 4x MSAA +
+#             shadows). Use for evaluation videos, cinematics, sim-to-real demos
+#             -- anything a HUMAN watches.
+#   train  -- throughput-optimised observations for batched vision-RL. SSAO and
+#             MSAA OFF (keeps PBR materials, IBL, shadows). Measured ~2x faster
+#             than ``eval`` (RTX 4060, 128px N=256: 8196 vs 4008 cam/s) with no
+#             impact on what a CNN policy learns -- SSAO subtlety and 4x MSAA
+#             edges are imperceptible to a 128px conv stack, so this spends
+#             fidelity only where it is actually perceived.
+#
+# Finer-grained presets (kept for reproducing the benchmark trade-off curve):
+#   high == eval; fast/medium/raw are intermediate points; ultra adds 8x MSAA+bloom.
 QUALITY_PRESETS = {
+    # --- the two you should reach for ---
+    "eval": dict(ssao=True, ssao_quality="ultra", ssao_ssct=True,
+                 shadows=True, msaa=True, msaa_samples=4),
+    "train": dict(ssao=False, shadows=True, msaa=False),
+    # --- intermediate / benchmark points ---
     "high": dict(ssao=True, ssao_quality="ultra", ssao_ssct=True,
                  shadows=True, msaa=True, msaa_samples=4),
     "medium": dict(ssao=True, ssao_quality="high", ssao_ssct=False,
@@ -174,8 +208,8 @@ class WarpRenderer:
         # 1. keyword toggles (recommended)
         r = WarpRenderer(width=256, height=256, batch_size=32, ssao=False)
 
-        # 2. a named quality preset ("high" | "fast" | "ultra" | "raw")
-        r = WarpRenderer(width=256, batch_size=32, preset="fast")
+        # 2. a named quality preset ("train" | "eval", or "fast"/"raw"/...)
+        r = WarpRenderer(width=256, batch_size=32, preset="train")
 
         # 3. an explicit RendererConfig
         r = WarpRenderer(config=make_config(width=256, ssao=True))
@@ -189,6 +223,11 @@ class WarpRenderer:
     Quality toggles (``ssao``, ``shadows``, ``msaa``, ``bloom``, ``fxaa``,
     ``exposure``, ``tone_mapping``, ``dithering``) are documented on
     :func:`make_config`. ``ssao`` is the biggest throughput lever (~2x off).
+
+    Two headline presets cover the two real use-cases:
+      * ``preset="eval"``  -- full photoreal fidelity (cinematics, evaluation).
+      * ``preset="train"`` -- ~2x faster batched observations for vision-RL,
+        with no impact on what a CNN policy learns.
     """
 
     def __init__(self, config: "RendererConfig | None" = None,
@@ -199,7 +238,7 @@ class WarpRenderer:
             config = make_config(**kw)
         elif preset or toggles:
             raise TypeError("pass either `config=` or keyword toggles/`preset=`, not both")
-        self._r = _native.WarpRenderer(config)
+        self._r = _get_native().WarpRenderer(config)
 
     # --- scene ---
     def load_model(self, model):

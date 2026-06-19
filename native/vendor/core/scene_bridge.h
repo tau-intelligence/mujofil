@@ -96,7 +96,8 @@ public:
     void load_glb_xform(const std::string& path, const float* mat4x4);
 
     /// Load IBL environment map from KTX files (cmgen output).
-    void load_ibl(const std::string& ibl_path, const std::string& skybox_path);
+    void load_ibl(const std::string& ibl_path, const std::string& skybox_path,
+                  bool with_skybox = true);
 
     /// Remove the default directional/point/spot lights (keeps IBL + skybox).
     void clear_dynamic_lights();
@@ -141,6 +142,10 @@ private:
 
     /// Build a Filament material instance from a resolved material.
     filament::MaterialInstance* make_instance(const ResolvedMaterial& rm);
+
+    /// Create Filament lights matching the MuJoCo model's <light> elements.
+    /// Returns the number of lights created (0 if the model has none).
+    int sync_lights_from_model(const mjModel* model);
 
     /// Create primitive geometry (box, sphere, capsule, cylinder, plane, ellipsoid).
     void create_primitive(int geom_id, int geom_type,
@@ -195,7 +200,8 @@ private:
                                      const std::vector<uint32_t>& indices,
                                      filament::MaterialInstance* mat_inst,
                                      int geom_id,
-                                     const std::vector<float>& uvs = {});
+                                     const std::vector<float>& uvs = {},
+                                     bool cast_shadows = true);
 
     Renderer& renderer_;
     std::unique_ptr<MaterialManager> material_manager_;

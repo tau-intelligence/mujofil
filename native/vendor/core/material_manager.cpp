@@ -1,6 +1,7 @@
 #include "core/material_manager.h"
 
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <stdexcept>
 
@@ -155,27 +156,54 @@ filament::MaterialInstance* MaterialManager::create_mujoco_textured_instance(
         filament::TextureSampler::MagFilter::LINEAR,
         filament::TextureSampler::WrapMode::REPEAT);
 
-    // The material declares both samplers; bind the unused one to whatever we
-    // have so Filament always has a valid texture bound, and gate via booleans.
-    filament::Texture* any2d = albedo_2d ? albedo_2d : cube;
-    filament::Texture* anyCube = cube ? cube : albedo_2d;
-    if (albedo_2d && albedo_2d->getTarget() == filament::Texture::Sampler::SAMPLER_2D) {
-        instance->setParameter("albedoMap", albedo_2d, sampler);
-        instance->setParameter("useAlbedo", true);
-    } else {
-        // Need a valid 2D texture bound even when unused.
-        instance->setParameter("useAlbedo", false);
-    }
-    if (cube && cube->getTarget() == filament::Texture::Sampler::SAMPLER_CUBEMAP) {
-        instance->setParameter("cubeMap", cube, sampler);
-        instance->setParameter("useCube", !albedo_2d);
-    } else {
-        instance->setParameter("useCube", false);
-    }
-    (void)any2d; (void)anyCube;
+    // Filament requires BOTH declared samplers (albedoMap + cubeMap) to be bound
+    // even when only one is used; the booleans select which one the shader reads.
+    const bool use2d = (albedo_2d &&
+        albedo_2d->getTarget() == filament::Texture::Sampler::SAMPLER_2D);
+    const bool useCube = (!use2d && cube &&
+        cube->getTarget() == filament::Texture::Sampler::SAMPLER_CUBEMAP);
+
+    instance->setParameter("albedoMap", use2d ? albedo_2d : dummy_2d(), sampler);
+    instance->setParameter("useAlbedo", use2d);
+    instance->setParameter("cubeMap", useCube ? cube : dummy_cube(), sampler);
+    instance->setParameter("useCube", useCube);
 
     instances_.push_back(instance);
     return instance;
+}
+
+filament::Texture* MaterialManager::dummy_2d() {
+    if (dummy_2d_) return dummy_2d_;
+    const uint8_t white[4] = {255, 255, 255, 255};
+    dummy_2d_ = filament::Texture::Builder()
+        .width(1).height(1).levels(1)
+        .format(filament::Texture::InternalFormat::SRGB8_A8)
+        .sampler(filament::Texture::Sampler::SAMPLER_2D)
+        .build(*engine_);
+    auto* buf = new uint8_t[4]; std::memcpy(buf, white, 4);
+    filament::Texture::PixelBufferDescriptor pb(
+        buf, 4, filament::Texture::Format::RGBA, filament::Texture::Type::UBYTE,
+        [](void* b, size_t, void*) { delete[] static_cast<uint8_t*>(b); });
+    dummy_2d_->setImage(*engine_, 0, std::move(pb));
+    return dummy_2d_;
+}
+
+filament::Texture* MaterialManager::dummy_cube() {
+    if (dummy_cube_) return dummy_cube_;
+    dummy_cube_ = filament::Texture::Builder()
+        .width(1).height(1).levels(1)
+        .format(filament::Texture::InternalFormat::SRGB8_A8)
+        .sampler(filament::Texture::Sampler::SAMPLER_CUBEMAP)
+        .build(*engine_);
+    auto* buf = new uint8_t[6 * 4];
+    for (int i = 0; i < 6 * 4; ++i) buf[i] = 255;
+    filament::Texture::PixelBufferDescriptor pb(
+        buf, 6 * 4, filament::Texture::Format::RGBA, filament::Texture::Type::UBYTE,
+        [](void* b, size_t, void*) { delete[] static_cast<uint8_t*>(b); });
+    filament::Texture::FaceOffsets off;
+    for (int f = 0; f < 6; ++f) off.offsets[f] = f * 4;
+    dummy_cube_->setImage(*engine_, 0, std::move(pb), off);
+    return dummy_cube_;
 }
 
 filament::Texture* MaterialManager::get_or_create_texture_2d(
@@ -334,6 +362,8 @@ void MaterialManager::clear() {
         engine_->destroy(tex);
     }
     texture_cache_.clear();
+    if (dummy_2d_) { engine_->destroy(dummy_2d_); dummy_2d_ = nullptr; }
+    if (dummy_cube_) { engine_->destroy(dummy_cube_); dummy_cube_ = nullptr; }
 
     for (auto& [name, mat] : materials_) {
         engine_->destroy(mat);

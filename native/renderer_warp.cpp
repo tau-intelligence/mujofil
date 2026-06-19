@@ -274,18 +274,31 @@ void Renderer::setup_view() {
         view_->setMultiSampleAntiAliasingOptions({.enabled = true, .sampleCount = config_.msaa_samples});
     if (config_.enable_ssao) {
         View::AmbientOcclusionOptions ao;
-        ao.radius = 0.3f; ao.power = 1.0f; ao.intensity = 1.0f;
+        // Params matched to mujofil's tuned SSAO: a moderate radius that grounds
+        // objects, with minHorizonAngleRad rejecting coplanar floor/wall samples
+        // (avoids the broad "gloom" band a wide radius paints at frame edges).
+        ao.radius = 0.30f; ao.bias = 0.0005f; ao.power = 1.0f;
+        ao.intensity = 1.5f; ao.bilateralThreshold = 0.05f;
+        ao.minHorizonAngleRad = 0.10f;
         switch (config_.ssao_quality) {
             case 0:  ao.quality = View::QualityLevel::LOW; break;
             case 1:  ao.quality = View::QualityLevel::MEDIUM; break;
             case 2:  ao.quality = View::QualityLevel::HIGH; break;
             default: ao.quality = View::QualityLevel::ULTRA; break;
         }
+        ao.lowPassFilter = View::QualityLevel::HIGH;
+        ao.upsampling = View::QualityLevel::HIGH;
         ao.enabled = true; ao.ssct.enabled = config_.ssao_ssct;
         view_->setAmbientOcclusionOptions(ao);
     }
     if (config_.enable_bloom)
         view_->setBloomOptions({.strength = 0.1f, .enabled = true});
+    if (config_.enable_ssr) {
+        filament::ScreenSpaceReflectionsOptions ssr;
+        ssr.enabled = true; ssr.thickness = 0.1f; ssr.bias = 0.01f;
+        ssr.maxDistance = 6.0f; ssr.stride = 2.0f;
+        view_->setScreenSpaceReflectionsOptions(ssr);
+    }
     view_->setShadowingEnabled(config_.enable_shadows);
     view_->setDithering(config_.dithering ? View::Dithering::TEMPORAL : View::Dithering::NONE);
 }

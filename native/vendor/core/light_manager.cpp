@@ -43,6 +43,10 @@ void LightManager::setup_default_lighting() {
         false
     );
 
+    setup_indirect_fallback();
+}
+
+void LightManager::setup_indirect_fallback() {
     // If no IBL loaded yet, use SH-based fallback from cmgen studio HDR
     if (!indirect_light_) {
         auto bands = std::array<filament::math::float3, 9>{
@@ -83,14 +87,15 @@ void LightManager::setup_default_lighting() {
         indirect_light_ = filament::IndirectLight::Builder()
             .reflections(default_refl_)
             .irradiance(3, bands.data())
-            .intensity(5000.0f)
+            .intensity(14000.0f)
             .build(*engine_);
 
         scene_->setIndirectLight(indirect_light_);
     }
 }
 
-void LightManager::load_ibl(const std::string& ibl_path, const std::string& skybox_path) {
+void LightManager::load_ibl(const std::string& ibl_path, const std::string& skybox_path,
+                            bool with_skybox) {
     // --- Load IBL reflections cubemap ---
     {
         std::ifstream file(ibl_path, std::ios::binary | std::ios::ate);
@@ -146,6 +151,18 @@ void LightManager::load_ibl(const std::string& ibl_path, const std::string& skyb
     }
 
     // --- Load skybox cubemap ---
+    // When with_skybox is false we still use the IBL for ambient/reflections but
+    // hide the visible environment so the background falls back to the renderer
+    // clear color (best for interiors, where an outdoor sky bleeding through
+    // open walls/windows looks wrong).
+    if (!with_skybox) {
+        if (skybox_) {
+            scene_->setSkybox(nullptr);
+            engine_->destroy(skybox_);
+            skybox_ = nullptr;
+        }
+        return;
+    }
     {
         std::ifstream file(skybox_path, std::ios::binary | std::ios::ate);
         if (!file.is_open()) return;
@@ -171,6 +188,19 @@ void LightManager::load_ibl(const std::string& ibl_path, const std::string& skyb
     }
 }
 
+void LightManager::set_skybox_cubemap(filament::Texture* cubemap) {
+    if (!cubemap) return;
+    if (skybox_) {
+        engine_->destroy(skybox_);
+        skybox_ = nullptr;
+    }
+    skybox_ = filament::Skybox::Builder()
+        .environment(cubemap)
+        .showSun(false)
+        .build(*engine_);
+    scene_->setSkybox(skybox_);
+}
+
 utils::Entity LightManager::add_directional_light(
     float dir_x, float dir_y, float dir_z,
     float r, float g, float b,
@@ -179,7 +209,7 @@ utils::Entity LightManager::add_directional_light(
     auto entity = utils::EntityManager::get().create();
 
     auto builder = filament::LightManager::Builder(
-        filament::LightManager::Type::SUN)
+        filament::LightManager::Type::DIRECTIONAL)
         .direction({dir_x, dir_y, dir_z})
         .color({r, g, b})
         .intensity(intensity)
@@ -187,9 +217,19 @@ utils::Entity LightManager::add_directional_light(
 
     if (cast_shadows) {
         filament::LightManager::ShadowOptions shadowOpts;
-        shadowOpts.mapSize = 2048;
-        shadowOpts.shadowCascades = 3;
-        shadowOpts.constantBias = 0.001f;
+        shadowOpts.mapSize = 4096;
+        // A single STABLE shadow map locked in world space (the default 3
+        // view-fit cascades make the shadow swim/grow/shrink as the camera
+        // rotates). shadowFar must be BOUNDED: 0 (auto-fit) stretches the single
+        // cascade over the entire scene AABB (a 46 m warehouse), so a ~1 m robot
+        // shadow collapses to sub-texel nothing. A bounded box centred on the
+        // camera keeps enough texels/metre for the robot + nearby floor to read.
+        shadowOpts.shadowCascades = 1;
+        shadowOpts.stable = true;
+        shadowOpts.shadowFar = 10.0f;       // metres of shadow coverage (bounded)
+        shadowOpts.shadowNearHint = 0.1f;
+        shadowOpts.shadowFarHint = 30.0f;
+        shadowOpts.constantBias = 0.0008f;
         shadowOpts.normalBias = 1.0f;
         builder.shadowOptions(shadowOpts);
     }

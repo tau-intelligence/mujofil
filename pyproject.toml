@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "mujofil-warp"
-version = "0.1.2"
+version = "0.1.3"
 description = "Photoreal Filament PBR rendering for GPU-resident MuJoCo (MJWarp), zero-copy to PyTorch"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -28,6 +28,14 @@ dependencies = [
 [project.optional-dependencies]
 torch = ["torch>=2.4"]
 examples = ["pillow"]
+# Asset tooling: convert USD / GLB environments into a visual GLB + a MuJoCo
+# collision MJCF (mujofil_warp.tools.usd_to_assets / glb_to_collision). Heavy
+# deps, so kept optional -- only with `pip install "mujofil-warp[usd]"`.
+usd = ["usd-core>=23.0", "trimesh>=4.0", "pillow", "numpy"]
+
+[project.scripts]
+mujofil-warp-usd-to-assets = "mujofil_warp.tools.usd_to_assets:main"
+mujofil-warp-glb-to-collision = "mujofil_warp.tools.glb_to_collision:main"
 
 [project.urls]
 Homepage = "https://github.com/tau-intelligence/mujofil-warp"
@@ -53,6 +61,7 @@ sdist.include = [
     "third_party/utils_include",
     "third_party/mujoco/include",
     "mujofil_warp/materials",
+    "mujofil_warp/tools",
     "packaging/build_filament_egl.sh",
     "packaging/filament-patches",
     "NOTICE",

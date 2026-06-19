@@ -56,7 +56,7 @@ echo "  LD _mujofil_warp${EXT_SUFFIX}"
 clang++ -shared -stdlib=libc++ "${OBJS[@]}" \
     -L"$FILAMENT_DIR/lib/x86_64" -L/usr/lib/x86_64-linux-gnu \
     -Wl,--start-group $FIL_LIBS -Wl,--end-group \
-    -lcudart -lpthread -ldl -lz \
+    -lEGL -lcudart -lpthread -ldl -lz \
     -o "_mujofil_warp${EXT_SUFFIX}"
 
 echo "built native/_mujofil_warp${EXT_SUFFIX}"

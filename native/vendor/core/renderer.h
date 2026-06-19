@@ -39,6 +39,7 @@ struct RendererConfig {
     bool enable_msaa = true;
     uint8_t msaa_samples = 4;
     bool enable_shadows = true;
+    bool enable_ssr = true;     // screen-space reflections (glossy surfaces)
     float exposure = 0.0f;     // Exposure compensation (EV); 0 = neutral
     bool tone_mapping = true;
     bool dithering = true;

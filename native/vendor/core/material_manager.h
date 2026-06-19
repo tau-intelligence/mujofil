@@ -75,6 +75,8 @@ public:
 private:
     void create_default_material();
     filament::Material* load_named_material(const std::string& filename);
+    filament::Texture* dummy_2d();
+    filament::Texture* dummy_cube();
 
     filament::Engine* engine_;
     filament::Material* default_material_ = nullptr;
@@ -83,6 +85,8 @@ private:
     std::unordered_map<std::string, filament::Material*> materials_;
     std::vector<filament::MaterialInstance*> instances_;
     std::unordered_map<int, filament::Texture*> texture_cache_;
+    filament::Texture* dummy_2d_ = nullptr;     // 1x1 white, for unused sampler2d
+    filament::Texture* dummy_cube_ = nullptr;   // 1x1 white cube, for unused samplerCube
 };
 
 } // namespace vf_mujoco

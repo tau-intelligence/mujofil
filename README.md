@@ -12,6 +12,14 @@ deliberately **low-fidelity single-hit raycaster** (flat Lambertian, no PBR / IB
 renderer** (PBR materials, image-based lighting, soft shadows, SSAO) and delivers
 each rendered frame **straight to PyTorch as a CUDA tensor — no CPU round-trip**.
 
+> 📖 **Full documentation:** [docs/](docs/) — [getting started](docs/getting-started.md),
+> [API guide](docs/guide.md), [feature reference](docs/features.md),
+> [cookbook & troubleshooting](docs/cookbook.md).
+>
+> 🖥️ **Running CPU MuJoCo instead?** Use the CPU edition,
+> [`mujofil`](https://github.com/tau-intelligence/MuJoCo-Filament) (photoreal
+> frames as NumPy arrays).
+
 ## Highlights
 
 - **Zero-copy to `torch.cuda`.** Filament renders into GPU memory that CUDA

@@ -46,3 +46,6 @@ wheelhouse/
 filament-egl-*.tgz
 # CI-extracted EGL Filament tree (fetched from the release in the wheels job)
 _filament_egl/
+
+# locally-copied native modules (CI/CMake builds them into the wheel)
+mujofil_warp/*.so

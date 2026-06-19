@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <algorithm>
 #include <stdexcept>
 
 #include <filament/RenderableManager.h>
@@ -42,13 +43,119 @@ void SceneBridge::load_model(const mjModel* model) {
     // Initialize default PBR materials
     material_manager_->initialize();
 
-    // Setup default lighting (sun + ambient)
-    light_manager_->setup_default_lighting();
+    // Lighting: if the MJCF/XML model declares its own <light> elements, honour
+    // them (so a native MuJoCo scene's lights actually drive the render); else
+    // fall back to a generic sun + fill. Either way keep the IBL/ambient probe
+    // so PBR materials have indirect light + reflections.
+    int n = sync_lights_from_model(model);
+    if (n == 0) {
+        light_manager_->setup_default_lighting();
+    } else {
+        light_manager_->setup_indirect_fallback();
+    }
+
+    // If the MJCF/XML defines its own skybox (e.g. MuJoCo's gradient sky), use
+    // it as the background so the scene matches MuJoCo's look (and the floor
+    // reflects that sky instead of a bright neutral one).
+    for (int t = 0; t < model->ntex; ++t) {
+        if (model->tex_type[t] == mjTEXTURE_SKYBOX) {
+            int tw = model->tex_width[t];
+            int th = model->tex_height[t];
+            int nch = model->tex_nchannel[t];
+            const uint8_t* tdata = model->tex_data + model->tex_adr[t];
+            // Use a distinct cache key range so it doesn't collide with material
+            // textures (which key on the texture id directly).
+            filament::Texture* sky = material_manager_->get_or_create_texture_cube(
+                100000 + t, tw, th, nch, tdata);
+            if (sky) light_manager_->set_skybox_cubemap(sky);
+            break;
+        }
+    }
 
     // Create Filament renderables for each MuJoCo geom
     for (int i = 0; i < model->ngeom; ++i) {
         create_geom(model, i);
     }
+}
+
+int SceneBridge::sync_lights_from_model(const mjModel* model) {
+    const int nlight = model->nlight;
+    if (nlight <= 0) return 0;
+
+    int created = 0;
+    for (int i = 0; i < nlight; ++i) {
+        if (model->light_active && !model->light_active[i]) continue;
+
+        // Global pose at qpos0 (correct for the common worldbody lights; static).
+        const mjtNum* p = model->light_pos0 + i * 3;
+        const mjtNum* d = model->light_dir0 + i * 3;
+        const float* col = model->light_diffuse + i * 3;
+        float r = col[0], g = col[1], b = col[2];
+        // Skip black lights.
+        if (r + g + b <= 1e-4f) continue;
+
+        int type = model->light_type[i];
+        bool shadow = model->light_castshadow && model->light_castshadow[i];
+
+        // MuJoCo diffuse is a 0..1 OpenGL-style colour. Map its magnitude onto
+        // Filament's physical scale (lux for directional, lumens for punctual).
+        // These constants suit normal MJCF scenes (tabletop to room scale); the
+        // warehouse drives its own much-brighter lights through the Python API,
+        // so it is unaffected by these values.
+        float mag = std::max({r, g, b, 1e-3f});
+        // Normalize colour so intensity carries the brightness.
+        float nr = r / mag, ng = g / mag, nb = b / mag;
+
+        switch (type) {
+            case mjLIGHT_DIRECTIONAL: {
+                float dx = (float)d[0], dy = (float)d[1], dz = (float)d[2];
+                float dl = std::sqrt(dx*dx + dy*dy + dz*dz);
+                if (dl > 1e-6f) { dx/=dl; dy/=dl; dz/=dl; } else { dz = -1.0f; }
+                // A perfectly vertical key light casts its shadow straight down,
+                // hidden directly under the object. MuJoCo/Isaac-style scenes
+                // read better with the shadow spread to the side, so nudge a
+                // near-vertical light slightly off-axis (keeps the lighting look
+                // essentially the same but grounds objects with a visible shadow).
+                if (std::abs(dx) < 0.15f && std::abs(dy) < 0.15f) {
+                    dx += 0.32f; dy += 0.22f;
+                    float nl = std::sqrt(dx*dx + dy*dy + dz*dz);
+                    dx/=nl; dy/=nl; dz/=nl;
+                }
+                light_manager_->add_directional_light(
+                    dx, dy, dz, nr, ng, nb, 13000.0f * mag, shadow);
+                ++created;
+                break;
+            }
+            case mjLIGHT_POINT: {
+                light_manager_->add_point_light(
+                    (float)p[0], (float)p[1], (float)p[2],
+                    nr, ng, nb, 60000.0f * mag, 8.0f, false);
+                ++created;
+                break;
+            }
+            case mjLIGHT_SPOT: {
+                float dx = (float)d[0], dy = (float)d[1], dz = (float)d[2];
+                float dl = std::sqrt(dx*dx + dy*dy + dz*dz);
+                if (dl > 1e-6f) { dx/=dl; dy/=dl; dz/=dl; } else { dz = -1.0f; }
+                // MuJoCo cutoff is the spot half-angle in degrees; clamp to
+                // Filament's <=90 requirement and give a soft inner cone.
+                float outer = 45.0f;
+                if (model->light_cutoff) outer = model->light_cutoff[i];
+                if (outer <= 1.0f || outer > 90.0f) outer = std::min(outer, 88.0f);
+                outer = std::min(std::max(outer, 5.0f), 88.0f);
+                float inner = outer * 0.6f;
+                light_manager_->add_spot_light(
+                    (float)p[0], (float)p[1], (float)p[2], dx, dy, dz,
+                    nr, ng, nb, 150000.0f * mag, 10.0f, inner, outer,
+                    shadow, false);
+                ++created;
+                break;
+            }
+            default:
+                break;  // image-based handled via IBL elsewhere
+        }
+    }
+    return created;
 }
 
 void SceneBridge::create_geom(const mjModel* model, int geom_id) {
@@ -99,17 +206,79 @@ ResolvedMaterial SceneBridge::resolve_material(const mjModel* model, int geom_id
     int matid = model->geom_matid[geom_id];
     if (matid >= 0) {
         rm.has_mat = true;
-        rm.metallic = model->mat_metallic[matid];
-        rm.roughness = model->mat_roughness[matid];
-        // MuJoCo specular (0..1, default 0.5) maps well onto Filament's
-        // dielectric reflectance (0.5 = ~4% F0). emission scales self-lighting.
-        rm.reflectance = model->mat_specular[matid];
-        rm.emissive = model->mat_emission[matid];
-        // Prefer the material's rgba unless the geom set a non-default color.
+        // MuJoCo leaves metallic/roughness at -1 ("unset") unless authored for
+        // PBR. Most MJCFs (e.g. MuJoCo Menagerie robots) ship NO PBR data — just
+        // a flat colour + legacy shininess — which renders as dull plastic. To
+        // get an Isaac-style finish out of the box we apply smart PBR defaults
+        // based on the base colour when the author left PBR unset. If the author
+        // DID set metallic/roughness, we always respect it.
+        float mj_metallic = model->mat_metallic[matid];
+        float mj_roughness = model->mat_roughness[matid];
         const float* mc = model->mat_rgba + matid * 4;
+
+        // Decide the surface colour first (geom rgba overrides the material's
+        // unless the geom is left at the default grey).
         bool geom_default = (geom_rgba[0] == 0.5f && geom_rgba[1] == 0.5f &&
                              geom_rgba[2] == 0.5f && geom_rgba[3] == 1.0f);
         if (geom_default) for (int k = 0; k < 4; ++k) rm.rgba[k] = mc[k];
+
+        const bool pbr_authored = (mj_metallic >= 0.0f) || (mj_roughness >= 0.0f);
+
+        if (pbr_authored) {
+            rm.metallic  = (mj_metallic  >= 0.0f) ? mj_metallic  : 0.0f;
+            rm.roughness = (mj_roughness >= 0.0f) ? mj_roughness
+                          : std::clamp(1.0f - model->mat_shininess[matid], 0.04f, 1.0f);
+            rm.reflectance = model->mat_specular[matid];
+        } else {
+            // --- Smart defaults for plain (non-PBR) MJCF materials ----------
+            float r = rm.rgba[0], g = rm.rgba[1], b = rm.rgba[2];
+            float lum = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+            float mx = std::max({r, g, b}), mn = std::min({r, g, b});
+            float chroma = mx - mn;          // ~0 = grey/black/white
+            float shininess = model->mat_shininess[matid];  // legacy hint, def 0.5
+
+            // Default: smooth semi-gloss dielectric (clean injection-moulded
+            // plastic) — the look most robot parts actually have.
+            rm.metallic = 0.0f;
+            rm.roughness = 0.42f;
+            rm.reflectance = 0.6f;
+
+            if (lum > 0.75f && chroma < 0.10f) {
+                // Bright neutral (white robot shells): smooth satin plastic.
+                rm.roughness = 0.38f;
+                rm.reflectance = 0.65f;
+            } else if (lum < 0.28f && chroma < 0.12f) {
+                // Dark neutral (joint covers, rubber, trim — MuJoCo "black" is
+                // often ~0.2 grey): glossy black plastic. Deepen the base colour
+                // so the bright studio IBL doesn't lift it to a washed grey; the
+                // gloss highlight is what reads it as a surface, not the albedo.
+                float deep = 0.45f;  // pull toward black
+                rm.rgba[0] *= deep; rm.rgba[1] *= deep; rm.rgba[2] *= deep;
+                rm.roughness = 0.28f;
+                rm.reflectance = 0.6f;
+            } else if (chroma < 0.08f && lum >= 0.35f && lum <= 0.75f) {
+                // Mid grey: likely brushed/painted metal -> a touch metallic.
+                rm.metallic = 0.6f;
+                rm.roughness = 0.40f;
+                rm.reflectance = 0.7f;
+            } else {
+                // Saturated colour (accents, coloured plastic): glossy plastic.
+                rm.roughness = 0.40f;
+                rm.reflectance = 0.6f;
+            }
+            // Nudge by the legacy shininess hint if the author set a non-default.
+            if (shininess > 0.0f && shininess != 0.5f) {
+                rm.roughness = std::clamp(rm.roughness * (1.3f - shininess), 0.06f, 1.0f);
+            }
+        }
+        rm.emissive = model->mat_emission[matid];
+
+        // NOTE on MuJoCo `mat_reflectance`: MuJoCo implements it as a PLANAR
+        // mirror (a second mirrored scene pass), not an environment reflection.
+        // Driving Filament roughness down here only makes the floor reflect the
+        // IBL/sky (a bright sheen) — NOT the scene geometry — which looks like a
+        // washed-out hotspot, not a mirror. So we keep the surface MATTE; a true
+        // planar reflection pass is the correct way to mirror the scene.
 
         rm.uvscale[0] = model->mat_texrepeat[matid * 2 + 0];
         rm.uvscale[1] = model->mat_texrepeat[matid * 2 + 1];
@@ -141,10 +310,13 @@ ResolvedMaterial SceneBridge::resolve_material(const mjModel* model, int geom_id
         else if (rm.rgba[0] > 0.7f && rm.rgba[1] < 0.3f) { rm.roughness = 0.4f; rm.reflectance = 0.25f; }
     }
 
-    // A large untextured/material-less plane reads best fully diffuse so IBL
-    // doesn't band across it.
-    if (geom_type == mjGEOM_PLANE && !rm.has_mat && !rm.textured()) {
-        rm.roughness = 1.0f; rm.metallic = 0.0f; rm.reflectance = 0.0f;
+    // Floor planes read best MATTE: a glossy floor reflects the bright IBL/sky
+    // and washes out (we can't planar-mirror the scene here anyway). Force any
+    // ground plane fully diffuse regardless of material so it stays clean.
+    if (geom_type == mjGEOM_PLANE) {
+        rm.roughness = 1.0f;
+        rm.metallic = 0.0f;
+        rm.reflectance = 0.0f;
     }
     return rm;
 }
@@ -191,25 +363,38 @@ void SceneBridge::create_primitive(int geom_id, int geom_type,
             return;
     }
 
-    // UVs are only needed for the textured material. The plane gets real planar
-    // UVs (for 2D textures); other geoms use the material's object-space cube
-    // sampling, so a zero UV buffer just satisfies the uv0 requirement.
+    // UVs are only needed for the textured material. The plane gets WORLD-space
+    // planar UVs so a checker/texture tiles uniformly regardless of the (large)
+    // plane size — matching MuJoCo's `texuniform` floor. Other geoms use the
+    // material's object-space cube sampling, so a zero UV buffer just satisfies
+    // the uv0 requirement.
+    ResolvedMaterial rm_local = rm;
     std::vector<float> uvs;
     if (rm.textured()) {
         const uint32_t vcount = static_cast<uint32_t>(vertices.size() / 6);
         uvs.resize(static_cast<size_t>(vcount) * 2, 0.0f);
         if (geom_type == mjGEOM_PLANE) {
-            const float inv = 0.5f / GROUND_PLANE_SIZE;
+            // Bake a world-space tile density directly into the UVs (~0.67
+            // texture repeats per metre -> roughly MuJoCo's ~0.75 m checker
+            // tiles). mat_texrepeat tunes it around that baseline. The shader's
+            // uvscale is neutralised to 1 so density isn't applied twice.
+            const float density = 0.13f * (rm.uvscale[0] > 0.0f ? rm.uvscale[0] : 1.0f);
+            const float density_y = 0.13f * (rm.uvscale[1] > 0.0f ? rm.uvscale[1] : 1.0f);
             for (uint32_t i = 0; i < vcount; ++i) {
                 float x = vertices[i * 6 + 0], y = vertices[i * 6 + 1];
-                uvs[i * 2 + 0] = x * inv + 0.5f;
-                uvs[i * 2 + 1] = y * inv + 0.5f;
+                uvs[i * 2 + 0] = x * density;
+                uvs[i * 2 + 1] = y * density_y;
             }
+            rm_local.uvscale[0] = 1.0f;
+            rm_local.uvscale[1] = 1.0f;
         }
     }
 
-    auto* mat_inst = make_instance(rm);
-    auto renderable = create_renderable(vertices, indices, mat_inst, geom_id, uvs);
+    auto* mat_inst = make_instance(rm_local);
+    // The ground plane only RECEIVES shadows; it shouldn't cast (a flat plane
+    // self-shadows into acne). All other primitives cast.
+    bool cast = (geom_type != mjGEOM_PLANE);
+    auto renderable = create_renderable(vertices, indices, mat_inst, geom_id, uvs, cast);
     renderable.mj_geom_type = geom_type;
     geom_renderables_.push_back(std::move(renderable));
 }
@@ -366,7 +551,8 @@ GeomRenderable SceneBridge::create_renderable(
     const std::vector<uint32_t>& indices,
     filament::MaterialInstance* mat_inst,
     int geom_id,
-    const std::vector<float>& uvs)
+    const std::vector<float>& uvs,
+    bool cast_shadows)
 {
     auto* engine = renderer_.engine();
 
@@ -512,7 +698,7 @@ GeomRenderable SceneBridge::create_renderable(
         .material(0, mat_inst)
         .boundingBox(aabb)
         .receiveShadows(true)
-        .castShadows(false)
+        .castShadows(cast_shadows)
         .culling(false)
         .build(*engine, entity);
 
@@ -815,8 +1001,9 @@ void SceneBridge::load_glb_xform(const std::string& path, const float* mat4x4) {
     scene->addEntities(asset->getEntities(), asset->getEntityCount());
 }
 
-void SceneBridge::load_ibl(const std::string& ibl_path, const std::string& skybox_path) {
-    light_manager_->load_ibl(ibl_path, skybox_path);
+void SceneBridge::load_ibl(const std::string& ibl_path, const std::string& skybox_path,
+                           bool with_skybox) {
+    light_manager_->load_ibl(ibl_path, skybox_path, with_skybox);
 }
 
 void SceneBridge::clear_dynamic_lights() {

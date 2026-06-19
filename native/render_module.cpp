@@ -186,6 +186,7 @@ PYBIND11_MODULE(MUJOFIL_WARP_MODULE, m) {
         .def_readwrite("enable_msaa", &RendererConfig::enable_msaa)
         .def_readwrite("msaa_samples", &RendererConfig::msaa_samples)
         .def_readwrite("enable_shadows", &RendererConfig::enable_shadows)
+        .def_readwrite("enable_ssr", &RendererConfig::enable_ssr)
         .def_readwrite("exposure", &RendererConfig::exposure)
         .def_readwrite("tone_mapping", &RendererConfig::tone_mapping)
         .def_readwrite("dithering", &RendererConfig::dithering)
