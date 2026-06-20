@@ -300,18 +300,22 @@ def build_mjcf(glb_path, M, name, out_dir, walls=True, props=True, ceiling=False
                prop_min_vol=0.01, prop_max_extent=6.0, max_props=80,
                robot_clear_xy=0.45, robot_clear_z=1.4, floor_z=None,
                decompose=False, coacd_threshold=0.08, max_hulls_per_prop=24,
-               geometry_floor=False, floor_thick=0.10):
+               geometry_floor=True, floor_thick=0.10, plane_floor=False):
     v, faces = _load_world_mesh(glb_path, M)
 
-    # FLOOR strategy. Two modes:
-    #  * geometry floor (deterministic, exact): emit a thin slab at every real
-    #    horizontal surface level, taken straight from the mesh -- no height is
-    #    *detected*, so it can never land at z=3.7-instead-of-0. A safety plane is
-    #    added far below (at the lowest vertex) purely as a fall-through backstop.
-    #  * detected plane (legacy default, cheap + gap-proof): one infinite plane at
-    #    a single auto-detected (or pinned) height. ``floor_z`` pins it.
-    want_geom_floor = (geometry_floor or
-                       os.environ.get("VF_COLLISION_GEOMETRY_FLOOR") == "1")
+    # FLOOR strategy. Default = geometry floor (deterministic, exact); the legacy
+    # detected plane is opt-out.
+    #  * geometry floor (DEFAULT): emit a thin slab at every real horizontal
+    #    surface level, taken straight from the mesh -- no height is *detected*,
+    #    so it can never land at z=3.7-instead-of-0 and never needs --floor-z. A
+    #    safety plane is added far below (lowest vertex) as a fall-through backstop.
+    #  * detected/pinned plane (opt-out): one infinite plane at a single
+    #    auto-detected or pinned height. Selected by --plane-floor / VF_COLLISION_
+    #    PLANE_FLOOR=1, or implicitly whenever ``floor_z`` is explicitly pinned.
+    force_plane = (plane_floor or
+                   os.environ.get("VF_COLLISION_PLANE_FLOOR") == "1" or
+                   floor_z is not None)
+    want_geom_floor = geometry_floor and not force_plane
     slabs = _horizontal_slabs(v, faces) if want_geom_floor else []
     use_geom_floor = bool(slabs)
     if use_geom_floor:
@@ -544,14 +548,13 @@ def main():
     ap.add_argument("--no-props", dest="props", action="store_false")
     ap.add_argument("--ceiling", action="store_true")
     ap.add_argument("--floor-z", type=float, default=None,
-                    help="pin the ground-plane Z (skip auto-detect; useful for "
-                         "multi-level scenes where detection picks a mezzanine)")
-    ap.add_argument("--geometry-floor", action="store_true",
-                    help="build the floor from the REAL surface geometry (a thin "
-                         "slab at every horizontal level, at its true height) "
-                         "instead of one detected infinite plane -- exact "
-                         "alignment with no height guess; adds a safety plane far "
-                         "below to catch fall-through.")
+                    help="pin the ground-plane Z to an explicit value. Implies a "
+                         "single infinite plane (opt out of the default geometry "
+                         "floor); rarely needed now.")
+    ap.add_argument("--plane-floor", action="store_true",
+                    help="opt OUT of the default geometry floor and use one "
+                         "infinite detected plane instead (cheaper, gap-proof, but "
+                         "relies on height detection).")
     ap.add_argument("--decompose", action="store_true",
                     help="decompose each prop into convex hulls with CoACD so the "
                          "collider follows concave shape (under tables, shelves) "
@@ -586,7 +589,7 @@ def main():
     build_mjcf(glb, M, name, args.out, walls=args.walls, props=args.props,
                ceiling=args.ceiling, floor_z=args.floor_z,
                decompose=args.decompose, coacd_threshold=args.coacd_threshold,
-               geometry_floor=args.geometry_floor)
+               plane_floor=args.plane_floor)
 
 
 if __name__ == "__main__":
