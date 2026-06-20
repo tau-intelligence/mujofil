@@ -86,49 +86,50 @@ def _load_world_mesh(glb_path, M):
 
 
 def _detect_floor_z(v, faces, center=(0.0, 0.0), base_z=0.0, footprint_r=1.2):
-    """World-Z of the floor under ``center`` (the robot location; world origin by
-    default). Primary method = cast a ray straight DOWN from just above the robot
-    base and take the first surface hit (robust for both open and indoor scenes:
-    starting just above the base avoids hitting a roof). Falls back to the area-
-    weighted up-facing-face mode if the raycast finds nothing."""
-    mesh = trimesh.Trimesh(vertices=v, faces=faces, process=False)
-    cx, cy = float(center[0]), float(center[1])
-    try:
-        origins = np.array([[cx, cy, base_z + 0.5]])
-        dirs = np.array([[0.0, 0.0, -1.0]])
-        locs, _, _ = mesh.ray.intersects_location(origins, dirs)
-        zs = [float(z) for z in locs[:, 2] if z <= base_z + 0.5 + 1e-3]
-        if zs:
-            return max(zs)  # topmost surface below the start point = the floor
-    except Exception:
-        pass
-    # fallback: lowest SIGNIFICANT up-facing surface near the robot footprint.
-    # (Was: the single densest up-facing height -- but on a multi-level scene a
-    # mezzanine can carry more geometry than the ground, so "densest" latched
-    # onto the wrong, elevated level. We instead take the LOWEST height cluster
-    # that still has meaningful area, which is the actual ground floor.)
+    """World-Z of the ground floor, robust to scene scale, position and layout
+    WITHOUT any manual calibration. (``center``/``base_z``/``footprint_r`` are
+    accepted for call-site compatibility but no longer used -- the detector is
+    deliberately position-independent so it works for scenes that are NOT centred
+    on the world origin and where no robot stands directly over clean ground.)
+
+    Method = area-weighted histogram of UP-FACING horizontal surfaces over the
+    WHOLE scene, then take the LOWEST height whose surface area is a meaningful
+    fraction of the largest surface cluster. Rationale:
+      * Up-facing + area-weighted -> walls (vertical) and thin props/clutter
+        contribute almost nothing, so the floor and other broad decks dominate.
+      * "Lowest *significant* cluster" -> on a multi-level scene we lock onto the
+        actual ground even when an elevated mezzanine carries a larger deck, yet
+        we still ignore a small dimple/drain below the floor (too little area).
+      * No raycast and no origin/footprint assumption -> independent of where the
+        scene sits in XY and of any presumed robot location (a single ray under
+        the origin used to latch onto a catwalk when the origin sat under one).
+    A flat scene with no clear horizontal surface falls back to the lowest vertex.
+    """
     tri = v[faces]
     a, b, c = tri[:, 0], tri[:, 1], tri[:, 2]
     n = np.cross(b - a, c - a)
     ln = np.linalg.norm(n, axis=1) + 1e-12
     nz = n[:, 2] / ln
     area = 0.5 * ln
-    cen = tri.mean(axis=1)
-    up = nz > 0.85
-    near = up & (np.abs(cen[:, 0] - cx) < footprint_r) & (np.abs(cen[:, 1] - cy) < footprint_r)
-    if near.sum() < 8:
-        near = up
-    h, w = cen[near, 2], area[near]
-    lo, hi = float(h.min()), float(h.max())
-    bins = np.linspace(lo, hi + 1e-4, max(20, int((hi - lo) / 0.02) + 1))
-    hist, edges = np.histogram(h, bins=bins, weights=w)
-    if hist.max() <= 0:
-        return lo
-    # the lowest bin whose area is a meaningful fraction of the biggest cluster
-    # = the ground floor (not a denser-but-higher mezzanine).
-    significant = hist >= 0.15 * hist.max()
-    i = int(np.argmax(significant))  # argmax of a bool array = first True
-    return float((edges[i] + edges[i + 1]) / 2)
+    cz = tri.mean(axis=1)[:, 2]
+    up = nz > 0.85  # near-horizontal, normal pointing up
+
+    if up.sum() >= 8:
+        h, w = cz[up], area[up]
+        zlo, zhi = float(h.min()), float(h.max())
+        # 5cm bins scale to any vertical extent; a flat deck lands in one bin and
+        # adjacent bins of a slightly-uneven deck both clear the threshold (we
+        # then take the lowest), so the result tracks the true ground height.
+        nb = max(12, int((zhi - zlo) / 0.05) + 1)
+        hist, edges = np.histogram(h, bins=np.linspace(zlo, zhi + 1e-4, nb),
+                                   weights=w)
+        if hist.max() > 0:
+            sig = np.nonzero(hist >= 0.25 * hist.max())[0]
+            if sig.size:
+                i = int(sig[0])  # lowest significant cluster = ground floor
+                return float((edges[i] + edges[i + 1]) / 2)
+    # last resort (terrain/sculpted scene with no broad horizontal deck).
+    return float(v[:, 2].min())
 
 
 def _world_bounds(v):

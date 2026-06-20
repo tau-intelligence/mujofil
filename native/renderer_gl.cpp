@@ -115,11 +115,12 @@ struct Renderer::VulkanState {
     // w via gl_Layer. The array is registered with CUDA once; each layer slices
     // into the (N,H,W,4) buffer.
     bool layered = false;
-    GLuint arrayTex = 0;                  // our GL_TEXTURE_2D_ARRAY (W,H,N) RGBA8
+    GLuint arrayTex = 0;                  // our GL_TEXTURE_2D_ARRAY (W,H,L) RGBA8
     Texture* arrayColor = nullptr;        // Filament import of arrayTex
-    Texture* arrayDepth = nullptr;        // Filament-created (W,H,N) depth array
+    Texture* arrayDepth = nullptr;        // Filament-created (W,H,L) depth array
     RenderTarget* arrayRT = nullptr;      // layered RT (whole array)
     cudaGraphicsResource* arrayCudaRes = nullptr;
+    uint32_t layers = 1;                  // array layers = min(n, MAX_PER_PASS)
     // Static-backdrop: a SEPARATE (W,H) 2D texture (depth==1 -> always single-layer
     // attach, never the layered path) for the shared environment, rendered once
     // then broadcast (glCopyImageSubData) into every array layer.
@@ -227,6 +228,10 @@ bool Renderer::initialize() {
     v.layered = config_.layered || (std::getenv("MUJOFIL_WARP_LAYERED") &&
                                     atoi(std::getenv("MUJOFIL_WARP_LAYERED")) != 0);
     if (v.layered) { v.atlas = false; single_sync_ = true; layered_ = true; }
+    // The array texture / instanced draw is capped at MAX_PER_PASS worlds (the
+    // Filament UBO instance limit). Larger batches render in chunks of this size
+    // into the SAME array, each chunk copied to its slice of the (N,H,W,4) output.
+    v.layers = v.layered ? std::min(v.n, layered_max_per_pass()) : v.n;
 
     // --- 2. GL color texture(s) we own (Filament renders into them; CUDA reads).
     // Layered mode: ONE (W,H,N) GL_TEXTURE_2D_ARRAY. Atlas: ONE (cols*W)x(rows*H)
@@ -235,12 +240,13 @@ bool Renderer::initialize() {
     const uint32_t texW = v.atlas ? v.atlasW : W;
     const uint32_t texH = v.atlas ? v.atlasH : H;
     if (v.layered) {
-        if (dbg) fprintf(stderr, "[gl] creating (W,H,N)=(%u,%u,%u) array texture...\n", W, H, v.n);
+        if (dbg) fprintf(stderr, "[gl] creating (W,H,L)=(%u,%u,%u) array tex (n=%u, chunked if >L)...\n",
+                         W, H, v.layers, v.n);
         glGenTextures(1, &v.arrayTex);
         glBindTexture(GL_TEXTURE_2D_ARRAY, v.arrayTex);
         glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA8, W, H, v.n, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA8, W, H, v.layers, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
         glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
         // Backdrop scratch: a single (W,H) 2D texture for the shared environment.
         glGenTextures(1, &v.backdropTex);
@@ -293,12 +299,12 @@ bool Renderer::initialize() {
     // (imported) + (W,H,N) array depth + ONE layered RT (whole array). Atlas: ONE
     // (atlasW x atlasH) depth + ONE RT. Multi-RT: ONE shared WxH depth + N RTs.
     if (v.layered) {
-        v.arrayColor = Texture::Builder().width(W).height(H).depth(v.n).levels(1)
+        v.arrayColor = Texture::Builder().width(W).height(H).depth(v.layers).levels(1)
             .sampler(Texture::Sampler::SAMPLER_2D_ARRAY)
             .format(Texture::InternalFormat::RGBA8)
             .usage(Texture::Usage::COLOR_ATTACHMENT | Texture::Usage::SAMPLEABLE)
             .import((intptr_t)v.arrayTex).build(*engine_);
-        v.arrayDepth = Texture::Builder().width(W).height(H).depth(v.n).levels(1)
+        v.arrayDepth = Texture::Builder().width(W).height(H).depth(v.layers).levels(1)
             .sampler(Texture::Sampler::SAMPLER_2D_ARRAY)
             .format(Texture::InternalFormat::DEPTH32F)
             .usage(Texture::Usage::DEPTH_ATTACHMENT).build(*engine_);
@@ -559,23 +565,17 @@ filament::RenderTarget* Renderer::layered_render_target() const {
     return vk_->arrayRT;
 }
 
-void* Renderer::render_layered_to_cuda() {
-    // Forked Filament gl_Layer path with a static-backdrop composite:
-    //  PASS 1 (backdrop): render the shared environment (GLB + skybox, visibility
-    //    layer bit 0) ONCE into a (W,H) 2D texture; copy it to the backdrop CUDA
-    //    buffer (composited under the objects in torch).
-    //  PASS 2 (objects): the per-world instanced geoms (layer bit 1) render in ONE
-    //    instanced draw, gl_Layer routing each world to its own array layer, on a
-    //    TRANSPARENT background (alpha 0). Objects carry alpha 1.
-    //  Slice the N object layers into (N,H,W,4); Python blends object-over-backdrop
-    //    by alpha. Separating the passes avoids fighting Filament's depth/discard.
+uint32_t Renderer::layered_max_per_pass() const { return 256u; }
+
+void Renderer::render_layered_backdrop() {
+    // PASS 1: render the shared static environment (visibility layer bit 0) ONCE
+    // into the (W,H) 2D backdrop texture; copy it to the backdrop CUDA buffer.
+    // The 2D texture (depth 1) always does a plain single-layer attach, so it is
+    // never confused with the layered array attach.
     auto& v = *vk_;
-    const uint32_t W = config_.width, H = config_.height, n = v.n;
+    const uint32_t W = config_.width, H = config_.height;
     setenv("FILAMENT_LAYERED_BATCH", "1", 1);
-
     auto t0 = clk::now();
-
-    // --- PASS 1: backdrop (bit 0) into the 2D backdrop texture ---
     view_->setVisibleLayers(0xFF, 0x01);
     view_->setRenderTarget(v.backdropRT);
     view_->setViewport({0, 0, W, H});
@@ -590,8 +590,28 @@ void* Renderer::render_layered_to_cuda() {
         renderer_->endFrame();
     }
     engine_->flushAndWait();
+    v.t_render += ns(t0, clk::now());
 
-    // --- PASS 2: per-world objects (bit 1) into all layers, transparent bg ---
+    const size_t rowBytes = size_t(W) * 4;
+    eglMakeCurrent(v.edpy, v.esurf, v.esurf, v.ectx);
+    cudaGraphicsMapResources(1, &v.backdropCudaRes, 0);
+    cudaArray_t arr = nullptr;
+    cudaGraphicsSubResourceGetMappedArray(&arr, v.backdropCudaRes, 0, 0);
+    cudaMemcpy2DFromArray(v.backdropBuf, rowBytes, arr, 0, 0, rowBytes, H,
+                          cudaMemcpyDeviceToDevice);
+    cudaGraphicsUnmapResources(1, &v.backdropCudaRes, 0);
+}
+
+void Renderer::render_layered_objects(uint32_t out_offset, uint32_t count) {
+    // PASS 2 (one chunk): the SceneBridge has filled the InstanceBuffer with this
+    // chunk's `count` worlds. ONE instanced draw routes world w -> array layer w
+    // via gl_Layer, on a TRANSPARENT background (alpha 0). Slice the `count`
+    // layers into the output buffer starting at world `out_offset`.
+    auto& v = *vk_;
+    const uint32_t W = config_.width, H = config_.height;
+    if (count > v.layers) count = v.layers;
+    setenv("FILAMENT_LAYERED_BATCH", "1", 1);
+    auto t0 = clk::now();
     view_->setVisibleLayers(0xFF, 0x02);
     view_->setRenderTarget(v.arrayRT);
     view_->setViewport({0, 0, W, H});
@@ -609,33 +629,31 @@ void* Renderer::render_layered_to_cuda() {
     auto t1 = clk::now();
     v.t_render += ns(t0, t1);
 
-    // --- copy backdrop 2D -> backdrop buffer; slice object array -> (N,H,W,4) ---
     const size_t rowBytes = size_t(W) * 4;
     const size_t slice = rowBytes * H;
     eglMakeCurrent(v.edpy, v.esurf, v.esurf, v.ectx);
-    cudaGraphicsMapResources(1, &v.backdropCudaRes, 0);
-    {
-        cudaArray_t arr = nullptr;
-        cudaGraphicsSubResourceGetMappedArray(&arr, v.backdropCudaRes, 0, 0);
-        cudaMemcpy2DFromArray(v.backdropBuf, rowBytes, arr, 0, 0, rowBytes, H,
-                              cudaMemcpyDeviceToDevice);
-    }
-    cudaGraphicsUnmapResources(1, &v.backdropCudaRes, 0);
     cudaGraphicsMapResources(1, &v.arrayCudaRes, 0);
-    for (uint32_t i = 0; i < n; ++i) {
+    for (uint32_t i = 0; i < count; ++i) {
         cudaArray_t arr = nullptr;
         cudaGraphicsSubResourceGetMappedArray(&arr, v.arrayCudaRes, i, 0);
-        cudaMemcpy2DFromArray(v.cudaBuf + size_t(i) * slice, rowBytes,
+        cudaMemcpy2DFromArray(v.cudaBuf + size_t(out_offset + i) * slice, rowBytes,
                               arr, 0, 0, rowBytes, H, cudaMemcpyDeviceToDevice);
     }
     cudaGraphicsUnmapResources(1, &v.arrayCudaRes, 0);
     cudaDeviceSynchronize();
     v.t_copy += ns(t1, clk::now());
-    v.n_frames += n;
-    return v.cudaBuf;
+    v.n_frames += count;
+}
+
+void* Renderer::render_layered_to_cuda() {
+    // Single-pass convenience for N <= layered_max_per_pass(): backdrop + 1 chunk.
+    render_layered_backdrop();
+    render_layered_objects(0, vk_->n);
+    return vk_->cudaBuf;
 }
 
 void* Renderer::layered_backdrop_ptr() const { return vk_->backdropBuf; }
+void* Renderer::layered_output_ptr() const { return vk_->cudaBuf; }
 
 int Renderer::cuda_device() const { return vk_->cudaDevice; }
 

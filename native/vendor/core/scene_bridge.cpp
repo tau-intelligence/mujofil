@@ -40,6 +40,12 @@ SceneBridge::~SceneBridge() {
 void SceneBridge::load_model(const mjModel* model) {
     clear();
 
+    // Free any material instances / textures from a previous model before we
+    // rebuild. MaterialManager is the sole owner of instances (SceneBridge::clear
+    // no longer destroys them), so this is what reclaims them on a reload; without
+    // it the old instances would leak AND linger as stale pointers in instances_.
+    material_manager_->clear();
+
     // Initialize default PBR materials
     material_manager_->initialize();
 
@@ -752,8 +758,12 @@ void SceneBridge::sync_transforms(const mjModel* model, const mjData* data) {
 }
 
 void SceneBridge::enable_layered(int n_worlds) {
+    // The instanced draw is capped at the Filament UBO instance limit (256). For
+    // larger batches the renderer loops in chunks of this size, re-filling the
+    // InstanceBuffer per chunk, so the InstanceBuffer + array only need 256 slots.
+    const int kMaxPerPass = 256;
     layered_ = n_worlds > 1;
-    n_worlds_ = n_worlds > 1 ? n_worlds : 1;
+    n_worlds_ = n_worlds > 1 ? std::min(n_worlds, kMaxPerPass) : 1;
     if (layered_) world_scratch_.resize(n_worlds_);
 }
 
@@ -868,7 +878,11 @@ void SceneBridge::clear() {
         engine->destroy(gr.entity);
         if (gr.vertex_buffer) engine->destroy(gr.vertex_buffer);
         if (gr.index_buffer) engine->destroy(gr.index_buffer);
-        if (gr.material_instance) engine->destroy(gr.material_instance);
+        // NOTE: gr.material_instance is owned by MaterialManager (every instance
+        // it hands out is tracked in its instances_ list and destroyed in its
+        // clear()). Destroying it here too double-frees the FMaterialInstance
+        // (crash on teardown/reload for any scene that shares/creates several
+        // instances, e.g. the mesh-heavy Franka). Single owner = MaterialManager.
         if (gr.instance_buffer) engine->destroy(gr.instance_buffer);
     }
     geom_renderables_.clear();

@@ -135,22 +135,28 @@ public:
         return wrap(dptr, 4, renderer_->height(), renderer_->width(), n);
     }
 
-    // --- LAYERED parallel-batch render -> torch (N,H,W,4), ONE GPU pass ---
+    // --- LAYERED parallel-batch render -> torch (N,H,W,4), chunked if N>cap ---
     py::capsule render_batch_layered_dlpack(uintptr_t model,
             const std::vector<uintptr_t>& datas, int cam) {
         const uint32_t n = (uint32_t)datas.size();
         void* dptr;
         {
             py::gil_scoped_release rel;
-            // Build the N per-world transforms into each geom's InstanceBuffer
-            // (GPU-resident), then ONE instanced render() draws all worlds into
-            // the array texture (forked gl_Layer routing) -> slice to (N,H,W,4).
-            std::vector<const mjData*> ds(n);
-            for (uint32_t i = 0; i < n; ++i) ds[i] = DATA(datas[i]);
-            bridge_->sync_transforms_layered(MODEL(model), ds);
-            // Shared camera across worlds (M1): sync once from the first world.
-            if (cam >= 0 && n > 0) bridge_->sync_camera(MODEL(model), ds[0], cam);
-            dptr = renderer_->render_layered_to_cuda();
+            // Render the shared static backdrop ONCE, then the per-world objects.
+            // For N larger than the per-pass cap, render in chunks: each chunk
+            // fills the InstanceBuffer with its worlds and writes its slice of the
+            // (N,H,W,4) output. Per-world transforms live GPU-side (InstanceBuffer).
+            renderer_->render_layered_backdrop();
+            const uint32_t cap = renderer_->layered_max_per_pass();
+            for (uint32_t start = 0; start < n; start += cap) {
+                const uint32_t cn = std::min(cap, n - start);
+                std::vector<const mjData*> chunk(cn);
+                for (uint32_t i = 0; i < cn; ++i) chunk[i] = DATA(datas[start + i]);
+                bridge_->sync_transforms_layered(MODEL(model), chunk);
+                if (cam >= 0 && cn > 0) bridge_->sync_camera(MODEL(model), chunk[0], cam);
+                renderer_->render_layered_objects(start, cn);
+            }
+            dptr = renderer_->layered_output_ptr();
         }
         return wrap(dptr, 4, renderer_->height(), renderer_->width(), n);
     }

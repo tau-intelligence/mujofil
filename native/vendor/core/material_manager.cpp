@@ -119,12 +119,23 @@ filament::MaterialInstance* MaterialManager::create_pbr_instance(
         ? blend_material_ : default_material_;
     auto* instance = mat->createInstance();
 
-    instance->setParameter("baseColor", filament::math::float4{r, g, b, a});
-    instance->setParameter("roughness", roughness);
-    instance->setParameter("metallic", metallic);
-    instance->setParameter("reflectance", reflectance);
-    instance->setParameter("emissive",
-        filament::math::float3{emissive, emissive, emissive});
+    // Set parameters defensively. Filament *panics* (aborts the process) if you
+    // setParameter a uniform the material doesn't declare, so a material set that
+    // is slightly older or comes from a different package build (e.g. a stale
+    // VF_MUJOCO_MATERIALS_DIR) would crash the whole renderer. hasParameter lets
+    // such a material degrade gracefully -- the geom just renders without that
+    // term -- which keeps the renderer working under any material configuration.
+    auto setF  = [&](const char* k, float v) {
+        if (mat->hasParameter(k)) instance->setParameter(k, v); };
+    auto setF3 = [&](const char* k, filament::math::float3 v) {
+        if (mat->hasParameter(k)) instance->setParameter(k, v); };
+    auto setF4 = [&](const char* k, filament::math::float4 v) {
+        if (mat->hasParameter(k)) instance->setParameter(k, v); };
+    setF4("baseColor", filament::math::float4{r, g, b, a});
+    setF("roughness", roughness);
+    setF("metallic", metallic);
+    setF("reflectance", reflectance);
+    setF3("emissive", filament::math::float3{emissive, emissive, emissive});
 
     instances_.push_back(instance);
     return instance;
@@ -143,13 +154,23 @@ filament::MaterialInstance* MaterialManager::create_mujoco_textured_instance(
     }
 
     auto* instance = textured_material_->createInstance();
-    instance->setParameter("baseColor", filament::math::float4{r, g, b, a});
-    instance->setParameter("roughness", roughness);
-    instance->setParameter("metallic", metallic);
-    instance->setParameter("reflectance", reflectance);
-    instance->setParameter("emissive",
-        filament::math::float3{emissive, emissive, emissive});
-    instance->setParameter("uvscale", filament::math::float2{uvscale_x, uvscale_y});
+    filament::Material* mat = textured_material_;
+    auto setF  = [&](const char* k, float v) {
+        if (mat->hasParameter(k)) instance->setParameter(k, v); };
+    auto setF2 = [&](const char* k, filament::math::float2 v) {
+        if (mat->hasParameter(k)) instance->setParameter(k, v); };
+    auto setF3 = [&](const char* k, filament::math::float3 v) {
+        if (mat->hasParameter(k)) instance->setParameter(k, v); };
+    auto setF4 = [&](const char* k, filament::math::float4 v) {
+        if (mat->hasParameter(k)) instance->setParameter(k, v); };
+    auto setB  = [&](const char* k, bool v) {
+        if (mat->hasParameter(k)) instance->setParameter(k, v); };
+    setF4("baseColor", filament::math::float4{r, g, b, a});
+    setF("roughness", roughness);
+    setF("metallic", metallic);
+    setF("reflectance", reflectance);
+    setF3("emissive", filament::math::float3{emissive, emissive, emissive});
+    setF2("uvscale", filament::math::float2{uvscale_x, uvscale_y});
 
     filament::TextureSampler sampler(
         filament::TextureSampler::MinFilter::LINEAR_MIPMAP_LINEAR,
@@ -163,10 +184,12 @@ filament::MaterialInstance* MaterialManager::create_mujoco_textured_instance(
     const bool useCube = (!use2d && cube &&
         cube->getTarget() == filament::Texture::Sampler::SAMPLER_CUBEMAP);
 
-    instance->setParameter("albedoMap", use2d ? albedo_2d : dummy_2d(), sampler);
-    instance->setParameter("useAlbedo", use2d);
-    instance->setParameter("cubeMap", useCube ? cube : dummy_cube(), sampler);
-    instance->setParameter("useCube", useCube);
+    if (mat->hasParameter("albedoMap"))
+        instance->setParameter("albedoMap", use2d ? albedo_2d : dummy_2d(), sampler);
+    setB("useAlbedo", use2d);
+    if (mat->hasParameter("cubeMap"))
+        instance->setParameter("cubeMap", useCube ? cube : dummy_cube(), sampler);
+    setB("useCube", useCube);
 
     instances_.push_back(instance);
     return instance;

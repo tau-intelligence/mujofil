@@ -111,11 +111,24 @@ public:
     // slices the N layers into the persistent (N, H, W, 4) CUDA buffer.
     bool layered() const { return layered_; }
     filament::RenderTarget* layered_render_target() const;  // for SceneBridge/View
+    // Max worlds renderable in ONE instanced pass (the Filament UBO instance cap).
+    // For batches larger than this, render in chunks of this size.
+    uint32_t layered_max_per_pass() const;
+    // PASS 1: render the shared static environment into the 2D backdrop texture +
+    // copy it to the backdrop CUDA buffer. Call once per batch.
+    void render_layered_backdrop();
+    // PASS 2 (one chunk): render `count` (<= layered_max_per_pass) per-world
+    // instanced objects into the array, then slice the `count` layers into the
+    // output buffer starting at world `out_offset`. The SceneBridge must have
+    // filled the InstanceBuffer with this chunk's `count` worlds first.
+    void render_layered_objects(uint32_t out_offset, uint32_t count);
+    // Single-pass convenience (N <= layered_max_per_pass): backdrop + one chunk.
     void* render_layered_to_cuda();
     // Device pointer to the (height, width, 4) uint8 static-backdrop buffer,
-    // filled by the most recent render_layered_to_cuda(). Composited under the
-    // per-world objects (which carry alpha) on the Python side.
+    // filled by render_layered_backdrop(). Composited under the per-world objects
+    // (which carry alpha) on the Python side.
     void* layered_backdrop_ptr() const;
+    void* layered_output_ptr() const;   // the persistent (N, H, W, 4) buffer
 
     // --- profiling (ns accumulators; reset_profile() zeros them) ---
     void reset_profile();
