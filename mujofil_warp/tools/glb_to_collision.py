@@ -150,6 +150,63 @@ def _world_bounds(v):
     return v.min(axis=0), v.max(axis=0)
 
 
+def _horizontal_slabs(v, faces, min_area_frac=0.15):
+    """Deterministic floor/deck colliders straight from the REAL geometry.
+
+    Instead of detecting one scalar floor height and synthesizing an infinite
+    plane (a heuristic that can pick the wrong level -- the z=3.7-should-be-0
+    failure), we take EVERY significant near-horizontal surface level and emit a
+    thin slab at ITS OWN true height, read directly off the mesh vertices. Key
+    property: nothing is *chosen*. Ground, mezzanine, steps, a catwalk -- each
+    that carries meaningful area becomes its own collider at its real z, so the
+    robot simply rests on whichever slab is beneath it. There is no "which level
+    is the floor" decision that could be wrong, and alignment is exact by
+    construction (same vertices, same transform M as the visual mesh).
+
+    Returns a list of (cx, cy, sx, sy, top_z): slab XY centre, XY half-extents,
+    and the world-Z of its top (walkable) surface. XY extent is the level's
+    bounding box -- never larger than the old infinite plane, so no new phantom.
+    """
+    tri = v[faces]
+    a, b, c = tri[:, 0], tri[:, 1], tri[:, 2]
+    n = np.cross(b - a, c - a)
+    ln = np.linalg.norm(n, axis=1) + 1e-12
+    nz = n[:, 2] / ln
+    area = 0.5 * ln
+    cen = tri.mean(axis=1)
+    horiz = np.abs(nz) > 0.85
+    if horiz.sum() < 8:
+        return []
+    h = cen[horiz, 2]
+    xs_all = cen[horiz, 0]
+    ys_all = cen[horiz, 1]
+    w = area[horiz]
+    zlo, zhi = float(h.min()), float(h.max())
+    nb = max(12, int((zhi - zlo) / 0.05) + 1)
+    edges = np.linspace(zlo, zhi + 1e-4, nb)
+    hist, _ = np.histogram(h, bins=edges, weights=w)
+    if hist.max() <= 0:
+        return []
+    bin_idx = np.clip(np.digitize(h, edges) - 1, 0, len(hist) - 1)
+    slabs = []
+    for i in range(len(hist)):
+        if hist[i] < min_area_frac * hist.max():
+            continue
+        sel = bin_idx == i
+        if sel.sum() < 4:
+            continue
+        xs, ys, zs = xs_all[sel], ys_all[sel], h[sel]
+        sx = float(xs.max() - xs.min()) / 2.0
+        sy = float(ys.max() - ys.min()) / 2.0
+        if sx < 0.05 or sy < 0.05:          # a thin strip, not a walkable deck
+            continue
+        cx = float(xs.min() + xs.max()) / 2.0
+        cy = float(ys.min() + ys.max()) / 2.0
+        top_z = float(np.median(zs))        # real surface height, no guess
+        slabs.append((cx, cy, sx, sy, top_z))
+    return slabs
+
+
 def _obb_world(part, M):
     """Oriented (or axis-aligned, see below) bounding box of a GLB submesh in
     world space. Returns (pos[3], quat_wxyz[4], half_extents[3], extents[3],
@@ -242,15 +299,31 @@ def build_mjcf(glb_path, M, name, out_dir, walls=True, props=True, ceiling=False
                wall_thick=0.2, friction=(1.0, 0.005, 0.0001),
                prop_min_vol=0.01, prop_max_extent=6.0, max_props=80,
                robot_clear_xy=0.45, robot_clear_z=1.4, floor_z=None,
-               decompose=False, coacd_threshold=0.08, max_hulls_per_prop=24):
+               decompose=False, coacd_threshold=0.08, max_hulls_per_prop=24,
+               geometry_floor=False, floor_thick=0.10):
     v, faces = _load_world_mesh(glb_path, M)
-    # ``floor_z`` lets the caller pin the ground plane height for scenes where the
-    # auto-detector (raycast + lowest-significant-surface) can't be trusted
-    # (e.g. multi-level/mezzanine GLBs). None = auto-detect.
-    if floor_z is None:
+
+    # FLOOR strategy. Two modes:
+    #  * geometry floor (deterministic, exact): emit a thin slab at every real
+    #    horizontal surface level, taken straight from the mesh -- no height is
+    #    *detected*, so it can never land at z=3.7-instead-of-0. A safety plane is
+    #    added far below (at the lowest vertex) purely as a fall-through backstop.
+    #  * detected plane (legacy default, cheap + gap-proof): one infinite plane at
+    #    a single auto-detected (or pinned) height. ``floor_z`` pins it.
+    want_geom_floor = (geometry_floor or
+                       os.environ.get("VF_COLLISION_GEOMETRY_FLOOR") == "1")
+    slabs = _horizontal_slabs(v, faces) if want_geom_floor else []
+    use_geom_floor = bool(slabs)
+    if use_geom_floor:
+        # reference height for wall/prop tests = the lowest real deck.
+        floor_z = min(s[4] for s in slabs)
+    elif floor_z is None:
         floor_z = _detect_floor_z(v, faces)
     else:
         floor_z = float(floor_z)
+    if want_geom_floor and not slabs:
+        print("note: geometry floor requested but no horizontal surface found -> "
+              "using detected plane.")
     bmin, bmax = _world_bounds(v)
     cx, cy = (bmin[0] + bmax[0]) / 2, (bmin[1] + bmax[1]) / 2
     sx, sy = (bmax[0] - bmin[0]) / 2, (bmax[1] - bmin[1]) / 2
@@ -279,11 +352,30 @@ def build_mjcf(glb_path, M, name, out_dir, walls=True, props=True, ceiling=False
     #   tests against the environment. Zero static-static cost, no bitmask needed.
     CFLAGS = 'group="3" contype="1" conaffinity="1" condim="3"'
 
-    # --- floor plane (always) -------------------------------------------------
-    geom_lines.append(
-        f'    <geom name="{name}_floor" type="plane" pos="{cx:.4f} {cy:.4f} {floor_z:.4f}" '
-        f'size="{max(sx, sy) + 5:.2f} {max(sx, sy) + 5:.2f} 0.1" '
-        f'{CFLAGS} friction="{fr}" rgba="0 0 0 0"/>')
+    # --- floor --------------------------------------------------------------
+    if use_geom_floor:
+        # one thin slab per real surface level, at its own true height; plus a
+        # far-below safety plane (deterministic: lowest vertex) to catch anything
+        # that drops through a gap in the real floor mesh.
+        halfz = max(floor_thick, 1e-3) / 2.0
+        for si, (scx, scy, ssx, ssy, stz) in enumerate(slabs):
+            geom_lines.append(
+                f'    <geom name="{name}_floor_{si}" type="box" '
+                f'pos="{scx:.4f} {scy:.4f} {stz - halfz:.4f}" '
+                f'size="{ssx + 0.05:.4f} {ssy + 0.05:.4f} {halfz:.4f}" '
+                f'{CFLAGS} friction="{fr}" rgba="0 0 0 0"/>')
+        backstop_z = float(v[:, 2].min()) - 1.0
+        geom_lines.append(
+            f'    <geom name="{name}_backstop" type="plane" '
+            f'pos="{cx:.4f} {cy:.4f} {backstop_z:.4f}" '
+            f'size="{max(sx, sy) + 5:.2f} {max(sx, sy) + 5:.2f} 0.1" '
+            f'{CFLAGS} friction="{fr}" rgba="0 0 0 0"/>')
+    else:
+        # legacy: a single infinite plane at the detected/pinned height.
+        geom_lines.append(
+            f'    <geom name="{name}_floor" type="plane" pos="{cx:.4f} {cy:.4f} {floor_z:.4f}" '
+            f'size="{max(sx, sy) + 5:.2f} {max(sx, sy) + 5:.2f} 0.1" '
+            f'{CFLAGS} friction="{fr}" rgba="0 0 0 0"/>')
 
     # --- bounding walls (DEFAULT) --------------------------------------------
     if walls:
@@ -390,11 +482,13 @@ def build_mjcf(glb_path, M, name, out_dir, walls=True, props=True, ceiling=False
 
     prop_desc = (f"{n_props} props as {n_hulls} convex hulls"
                  if mesh_assets else f"{n_props} prop boxes")
+    floor_desc = (f"{len(slabs)} geometry-floor slabs + backstop"
+                  if use_geom_floor else f"floor plane z={floor_z:.4f}")
     xml = (
         f'<mujoco model="{name}_collision">\n'
         f'  <!-- Collision-only proxy for the {name} GLB backdrop. group=3 -> invisible\n'
         f'       in MuJoFil (renderer skips group>=3) and in MuJoCo viewer. Aligned to\n'
-        f'       the GLB by the same visual transform. Floor z = {floor_z:.4f} (world).\n'
+        f'       the GLB by the same visual transform. Floor = {floor_desc}.\n'
         f'       floor + walls + {prop_desc}. All in worldbody -> env-env\n'
         f'       contacts auto-pruned (same-body rule); only the robot collides. -->\n'
         f'{asset_block}'
@@ -407,7 +501,9 @@ def build_mjcf(glb_path, M, name, out_dir, walls=True, props=True, ceiling=False
     with open(out_path, "w") as f:
         f.write(xml)
     extra = f" hulls={n_hulls}" if mesh_assets else ""
-    print(f"floor_z={floor_z:.4f}  bounds X[{bmin[0]:.1f},{bmax[0]:.1f}] "
+    floor_info = (f"geom-floor({len(slabs)} slabs)" if use_geom_floor
+                  else f"floor_z={floor_z:.4f}")
+    print(f"{floor_info}  bounds X[{bmin[0]:.1f},{bmax[0]:.1f}] "
           f"Y[{bmin[1]:.1f},{bmax[1]:.1f}]  walls={walls} props={n_props}{extra} -> {out_path}")
     return out_path
 
@@ -450,6 +546,12 @@ def main():
     ap.add_argument("--floor-z", type=float, default=None,
                     help="pin the ground-plane Z (skip auto-detect; useful for "
                          "multi-level scenes where detection picks a mezzanine)")
+    ap.add_argument("--geometry-floor", action="store_true",
+                    help="build the floor from the REAL surface geometry (a thin "
+                         "slab at every horizontal level, at its true height) "
+                         "instead of one detected infinite plane -- exact "
+                         "alignment with no height guess; adds a safety plane far "
+                         "below to catch fall-through.")
     ap.add_argument("--decompose", action="store_true",
                     help="decompose each prop into convex hulls with CoACD so the "
                          "collider follows concave shape (under tables, shelves) "
@@ -483,7 +585,8 @@ def main():
 
     build_mjcf(glb, M, name, args.out, walls=args.walls, props=args.props,
                ceiling=args.ceiling, floor_z=args.floor_z,
-               decompose=args.decompose, coacd_threshold=args.coacd_threshold)
+               decompose=args.decompose, coacd_threshold=args.coacd_threshold,
+               geometry_floor=args.geometry_floor)
 
 
 if __name__ == "__main__":
