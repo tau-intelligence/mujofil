@@ -705,10 +705,14 @@ GeomRenderable SceneBridge::create_renderable(
     // instance is one world; the forked vertex shader routes instance w -> array
     // layer w (gl_Layer), so a single render() draws all worlds. The InstanceBuffer
     // holds the per-world transform for this geom (filled in sync_transforms_layered).
+    // Objects go on visibility LAYER BIT 1 so the renderer can render them in a
+    // separate pass from the static GLB backdrop (which stays on bit 0 and is
+    // rendered once + broadcast to all array layers).
     filament::InstanceBuffer* instance_buffer = nullptr;
     if (layered_ && n_worlds_ > 1) {
         instance_buffer = filament::InstanceBuffer::Builder(n_worlds_).build(*engine);
         builder.instances(n_worlds_, instance_buffer);
+        builder.layerMask(0xFF, 0x02);   // objects = layer bit 1
     }
     builder.build(*engine, entity);
 

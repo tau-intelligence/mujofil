@@ -155,6 +155,13 @@ public:
         return wrap(dptr, 4, renderer_->height(), renderer_->width(), n);
     }
 
+    // The (H,W,4) static backdrop from the most recent layered render. Python
+    // composites the per-world objects (which carry alpha) over this.
+    py::capsule layered_backdrop_dlpack() {
+        return wrap(renderer_->layered_backdrop_ptr(), 3,
+                    renderer_->height(), renderer_->width());
+    }
+
     bool layered() const { return renderer_->layered(); }
     uint32_t width() const { return renderer_->width(); }
     uint32_t height() const { return renderer_->height(); }
@@ -250,6 +257,8 @@ PYBIND11_MODULE(MUJOFIL_WARP_MODULE, m) {
         .def("render_batch_layered_dlpack", &WarpRenderer::render_batch_layered_dlpack,
              py::arg("model"), py::arg("datas"), py::arg("cam_id") = -1,
              "LAYERED: render N worlds in ONE instanced pass (forked gl_Layer); (N,H,W,4) cuda DLPack.")
+        .def("layered_backdrop_dlpack", &WarpRenderer::layered_backdrop_dlpack,
+             "The (H,W,4) static backdrop from the last layered render (compose under objects).")
         .def_property_readonly("layered", &WarpRenderer::layered)
         .def("reset_profile", &WarpRenderer::reset_profile)
         .def("profile", &WarpRenderer::profile)

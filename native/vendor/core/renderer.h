@@ -112,6 +112,10 @@ public:
     bool layered() const { return layered_; }
     filament::RenderTarget* layered_render_target() const;  // for SceneBridge/View
     void* render_layered_to_cuda();
+    // Device pointer to the (height, width, 4) uint8 static-backdrop buffer,
+    // filled by the most recent render_layered_to_cuda(). Composited under the
+    // per-world objects (which carry alpha) on the Python side.
+    void* layered_backdrop_ptr() const;
 
     // --- profiling (ns accumulators; reset_profile() zeros them) ---
     void reset_profile();

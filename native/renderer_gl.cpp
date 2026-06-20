@@ -120,6 +120,15 @@ struct Renderer::VulkanState {
     Texture* arrayDepth = nullptr;        // Filament-created (W,H,N) depth array
     RenderTarget* arrayRT = nullptr;      // layered RT (whole array)
     cudaGraphicsResource* arrayCudaRes = nullptr;
+    // Static-backdrop: a SEPARATE (W,H) 2D texture (depth==1 -> always single-layer
+    // attach, never the layered path) for the shared environment, rendered once
+    // then broadcast (glCopyImageSubData) into every array layer.
+    GLuint backdropTex = 0;
+    Texture* backdropColor = nullptr;
+    Texture* backdropDepth = nullptr;
+    RenderTarget* backdropRT = nullptr;
+    cudaGraphicsResource* backdropCudaRes = nullptr;  // registered once
+    uint8_t* backdropBuf = nullptr;                   // device (H,W,4), composited in torch
 
     std::vector<cudaGraphicsResource*> cudaRes;  // registered once per texture
     uint8_t* cudaBuf = nullptr;           // device linear (N,H,W,4)
@@ -233,6 +242,13 @@ bool Renderer::initialize() {
         glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA8, W, H, v.n, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
         glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+        // Backdrop scratch: a single (W,H) 2D texture for the shared environment.
+        glGenTextures(1, &v.backdropTex);
+        glBindTexture(GL_TEXTURE_2D, v.backdropTex);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, W, H, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glBindTexture(GL_TEXTURE_2D, 0);
         glFinish();
     } else {
         if (dbg) fprintf(stderr, "[gl] creating %u texture(s) %ux%u (atlas=%d grid %ux%u)...\n",
@@ -290,6 +306,22 @@ bool Renderer::initialize() {
             .texture(RenderTarget::AttachmentPoint::COLOR0, v.arrayColor)
             .texture(RenderTarget::AttachmentPoint::DEPTH, v.arrayDepth)
             .build(*engine_);
+        // Backdrop RT: a single (W,H) 2D color+depth target for the shared
+        // environment pass. depth==1 so the GL backend always does a plain
+        // single-layer attach (the layered path needs depth>1).
+        v.backdropColor = Texture::Builder().width(W).height(H).levels(1)
+            .sampler(Texture::Sampler::SAMPLER_2D)
+            .format(Texture::InternalFormat::RGBA8)
+            .usage(Texture::Usage::COLOR_ATTACHMENT | Texture::Usage::SAMPLEABLE)
+            .import((intptr_t)v.backdropTex).build(*engine_);
+        v.backdropDepth = Texture::Builder().width(W).height(H).levels(1)
+            .sampler(Texture::Sampler::SAMPLER_2D)
+            .format(Texture::InternalFormat::DEPTH32F)
+            .usage(Texture::Usage::DEPTH_ATTACHMENT).build(*engine_);
+        v.backdropRT = RenderTarget::Builder()
+            .texture(RenderTarget::AttachmentPoint::COLOR0, v.backdropColor)
+            .texture(RenderTarget::AttachmentPoint::DEPTH, v.backdropDepth)
+            .build(*engine_);
     } else {
         const uint32_t dW = v.atlas ? v.atlasW : W;
         const uint32_t dH = v.atlas ? v.atlasH : H;
@@ -329,6 +361,14 @@ bool Renderer::initialize() {
         if (e != cudaSuccess)
             throw std::runtime_error(std::string("GL renderer: cudaGraphicsGLRegisterImage(array): ")
                                      + cudaGetErrorString(e));
+        // Backdrop 2D texture -> its own CUDA buffer (composited under objects).
+        e = cudaGraphicsGLRegisterImage(
+            &v.backdropCudaRes, v.backdropTex, GL_TEXTURE_2D, cudaGraphicsRegisterFlagsReadOnly);
+        if (e != cudaSuccess)
+            throw std::runtime_error(std::string("GL renderer: cudaGraphicsGLRegisterImage(backdrop): ")
+                                     + cudaGetErrorString(e));
+        if (cudaMalloc(&v.backdropBuf, size_t(W) * H * 4) != cudaSuccess)
+            throw std::runtime_error("GL renderer: cudaMalloc(backdrop) failed");
     } else {
         v.cudaRes.resize(nTex, nullptr);
         for (uint32_t i = 0; i < nTex; ++i) {
@@ -520,46 +560,82 @@ filament::RenderTarget* Renderer::layered_render_target() const {
 }
 
 void* Renderer::render_layered_to_cuda() {
-    // The forked Filament gl_Layer path: the SceneBridge has instanced every geom
-    // batch_size times, so ONE render() draws all N worlds, each routed to its own
-    // array layer. FILAMENT_LAYERED_BATCH makes the GL backend attach the whole
-    // array texture as a layered FBO. Then slice each layer into (N,H,W,4).
+    // Forked Filament gl_Layer path with a static-backdrop composite:
+    //  PASS 1 (backdrop): render the shared environment (GLB + skybox, visibility
+    //    layer bit 0) ONCE into a (W,H) 2D texture; copy it to the backdrop CUDA
+    //    buffer (composited under the objects in torch).
+    //  PASS 2 (objects): the per-world instanced geoms (layer bit 1) render in ONE
+    //    instanced draw, gl_Layer routing each world to its own array layer, on a
+    //    TRANSPARENT background (alpha 0). Objects carry alpha 1.
+    //  Slice the N object layers into (N,H,W,4); Python blends object-over-backdrop
+    //    by alpha. Separating the passes avoids fighting Filament's depth/discard.
     auto& v = *vk_;
     const uint32_t W = config_.width, H = config_.height, n = v.n;
     setenv("FILAMENT_LAYERED_BATCH", "1", 1);
-    view_->setRenderTarget(v.arrayRT);
-    view_->setViewport({0, 0, W, H});
 
     auto t0 = clk::now();
+
+    // --- PASS 1: backdrop (bit 0) into the 2D backdrop texture ---
+    view_->setVisibleLayers(0xFF, 0x01);
+    view_->setRenderTarget(v.backdropRT);
+    view_->setViewport({0, 0, W, H});
+    {
+        filament::Renderer::ClearOptions co;
+        co.clearColor = {0.05f, 0.06f, 0.09f, 1.0f};
+        co.clear = true;
+        renderer_->setClearOptions(co);
+    }
     if (renderer_->beginFrame(swapchain_)) {
         renderer_->render(view_);
         renderer_->endFrame();
     }
+    engine_->flushAndWait();
+
+    // --- PASS 2: per-world objects (bit 1) into all layers, transparent bg ---
+    view_->setVisibleLayers(0xFF, 0x02);
+    view_->setRenderTarget(v.arrayRT);
+    view_->setViewport({0, 0, W, H});
+    {
+        filament::Renderer::ClearOptions co;
+        co.clearColor = {0.0f, 0.0f, 0.0f, 0.0f};   // transparent: alpha 0 = no object
+        co.clear = true;
+        renderer_->setClearOptions(co);
+    }
+    if (renderer_->beginFrame(swapchain_)) {
+        renderer_->render(view_);
+        renderer_->endFrame();
+    }
+    engine_->flushAndWait();
     auto t1 = clk::now();
     v.t_render += ns(t0, t1);
 
-    engine_->flushAndWait();
-    auto t2 = clk::now();
-    v.t_flush += ns(t1, t2);
-
-    // slice the array's N layers into the contiguous (N,H,W,4) CUDA buffer.
+    // --- copy backdrop 2D -> backdrop buffer; slice object array -> (N,H,W,4) ---
     const size_t rowBytes = size_t(W) * 4;
     const size_t slice = rowBytes * H;
     eglMakeCurrent(v.edpy, v.esurf, v.esurf, v.ectx);
+    cudaGraphicsMapResources(1, &v.backdropCudaRes, 0);
+    {
+        cudaArray_t arr = nullptr;
+        cudaGraphicsSubResourceGetMappedArray(&arr, v.backdropCudaRes, 0, 0);
+        cudaMemcpy2DFromArray(v.backdropBuf, rowBytes, arr, 0, 0, rowBytes, H,
+                              cudaMemcpyDeviceToDevice);
+    }
+    cudaGraphicsUnmapResources(1, &v.backdropCudaRes, 0);
     cudaGraphicsMapResources(1, &v.arrayCudaRes, 0);
     for (uint32_t i = 0; i < n; ++i) {
         cudaArray_t arr = nullptr;
-        // arrayIndex = layer i, mipLevel = 0
         cudaGraphicsSubResourceGetMappedArray(&arr, v.arrayCudaRes, i, 0);
         cudaMemcpy2DFromArray(v.cudaBuf + size_t(i) * slice, rowBytes,
                               arr, 0, 0, rowBytes, H, cudaMemcpyDeviceToDevice);
     }
     cudaGraphicsUnmapResources(1, &v.arrayCudaRes, 0);
     cudaDeviceSynchronize();
-    v.t_copy += ns(t2, clk::now());
+    v.t_copy += ns(t1, clk::now());
     v.n_frames += n;
     return v.cudaBuf;
 }
+
+void* Renderer::layered_backdrop_ptr() const { return vk_->backdropBuf; }
 
 int Renderer::cuda_device() const { return vk_->cudaDevice; }
 
@@ -583,14 +659,19 @@ void Renderer::destroy() {
     for (auto* r : v.cudaRes) if (r) cudaGraphicsUnregisterResource(r);
     v.cudaRes.clear();
     if (v.arrayCudaRes) { cudaGraphicsUnregisterResource(v.arrayCudaRes); v.arrayCudaRes = nullptr; }
+    if (v.backdropCudaRes) { cudaGraphicsUnregisterResource(v.backdropCudaRes); v.backdropCudaRes = nullptr; }
+    if (v.backdropBuf) { cudaFree(v.backdropBuf); v.backdropBuf = nullptr; }
     if (v.cudaBuf) { cudaFree(v.cudaBuf); v.cudaBuf = nullptr; }
     if (engine_) {
         for (auto* rt : v.rt) if (rt) engine_->destroy(rt);
         for (auto* t : v.filColor) if (t) engine_->destroy(t);
         if (v.depth) engine_->destroy(v.depth);
         if (v.arrayRT) engine_->destroy(v.arrayRT);
+        if (v.backdropRT) engine_->destroy(v.backdropRT);
         if (v.arrayColor) engine_->destroy(v.arrayColor);
         if (v.arrayDepth) engine_->destroy(v.arrayDepth);
+        if (v.backdropColor) engine_->destroy(v.backdropColor);
+        if (v.backdropDepth) engine_->destroy(v.backdropDepth);
         if (color_grading_) engine_->destroy(color_grading_);
         if (view_) engine_->destroy(view_);
         if (scene_) engine_->destroy(scene_);
@@ -602,8 +683,10 @@ void Renderer::destroy() {
     }
     v.rt.clear(); v.filColor.clear(); v.depth = nullptr;
     v.arrayRT = nullptr; v.arrayColor = nullptr; v.arrayDepth = nullptr;
+    v.backdropRT = nullptr; v.backdropColor = nullptr; v.backdropDepth = nullptr;
     if (!v.glTex.empty()) { glDeleteTextures(v.glTex.size(), v.glTex.data()); v.glTex.clear(); }
     if (v.arrayTex) { glDeleteTextures(1, &v.arrayTex); v.arrayTex = 0; }
+    if (v.backdropTex) { glDeleteTextures(1, &v.backdropTex); v.backdropTex = 0; }
     if (v.ectx != EGL_NO_CONTEXT) {
         eglMakeCurrent(v.edpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
         if (v.esurf != EGL_NO_SURFACE) eglDestroySurface(v.edpy, v.esurf);

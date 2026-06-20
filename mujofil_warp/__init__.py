@@ -352,7 +352,17 @@ class WarpRenderer:
                                "layered=True (e.g. WarpRenderer(layered=True, batch_size=N))")
         _check_cam(model, cam_id)
         ptrs = [_addr(d) for d in datas]
-        return torch.from_dlpack(self._r.render_batch_layered_dlpack(_addr(model), ptrs, cam_id))
+        obj = torch.from_dlpack(self._r.render_batch_layered_dlpack(_addr(model), ptrs, cam_id))
+        # Composite the per-world objects (alpha=255 where drawn) over the shared
+        # static backdrop (GLB + skybox), which the renderer produced once and
+        # broadcasts to every world. This is a single GPU blend, no CPU bounce.
+        bg = torch.from_dlpack(self._r.layered_backdrop_dlpack())   # (H,W,4)
+        a = obj[..., 3:4].to(torch.float32) * (1.0 / 255.0)         # (N,H,W,1)
+        out = obj[..., :3].to(torch.float32) * a + bg[..., :3].to(torch.float32) * (1.0 - a)
+        rgba = torch.empty_like(obj)
+        rgba[..., :3] = out.to(torch.uint8)
+        rgba[..., 3] = 255
+        return rgba
 
     @property
     def layered(self) -> bool:
