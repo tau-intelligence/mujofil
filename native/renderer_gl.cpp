@@ -576,6 +576,15 @@ void Renderer::render_layered_backdrop() {
     const uint32_t W = config_.width, H = config_.height;
     setenv("FILAMENT_LAYERED_BATCH", "1", 1);
     auto t0 = clk::now();
+    // The backdrop renders into a single-layer 2D texture, so gl_Layer routing is
+    // irrelevant here and we can run the FULL post-processing pipeline. This is
+    // REQUIRED for screen-space refraction: gltfio scenes using
+    // KHR_materials_transmission (e.g. glass in the chess/gallery GLBs) allocate a
+    // refraction pass that only exists when post-processing is enabled; with it
+    // off Filament hits an invalid handle ("corrupted heap Handle") and aborts.
+    // Post-processing is re-disabled for the object array pass (render_layered_
+    // objects) where it WOULD collapse the gl_Layer routing.
+    view_->setPostProcessingEnabled(true);
     view_->setVisibleLayers(0xFF, 0x01);
     view_->setRenderTarget(v.backdropRT);
     view_->setViewport({0, 0, W, H});
@@ -612,6 +621,10 @@ void Renderer::render_layered_objects(uint32_t out_offset, uint32_t count) {
     if (count > v.layers) count = v.layers;
     setenv("FILAMENT_LAYERED_BATCH", "1", 1);
     auto t0 = clk::now();
+    // Post-processing OFF for the array pass: with it on, Filament renders into
+    // its own single-layer intermediate and blits, collapsing every world into
+    // layer 0 (the backdrop pass re-enables it for refraction support).
+    view_->setPostProcessingEnabled(false);
     view_->setVisibleLayers(0xFF, 0x02);
     view_->setRenderTarget(v.arrayRT);
     view_->setViewport({0, 0, W, H});
