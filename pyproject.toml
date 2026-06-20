@@ -33,7 +33,7 @@ examples = ["pillow"]
 # deps, so kept optional -- only with `pip install "mujofil-warp[usd]"`.
 # Self-pin to this exact version so the resolver can't backtrack to an older
 # mujofil-warp that lacks the [usd] extra.
-usd = ["mujofil-warp==0.1.5", "usd-core>=23.0", "trimesh>=4.0", "pillow", "numpy"]
+usd = ["mujofil-warp==0.1.5", "usd-core>=23.0", "trimesh>=4.0", "scipy>=1.7", "pillow", "numpy"]
 
 [project.scripts]
 mujofil-warp-usd-to-assets = "mujofil_warp.tools.usd_to_assets:main"

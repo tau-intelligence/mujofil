@@ -86,23 +86,35 @@ def _load_world_mesh(glb_path, M):
 
 
 def _detect_floor_z(v, faces, center=(0.0, 0.0), base_z=0.0, footprint_r=1.2):
-    """World-Z of the ground floor, robust to scene scale, position and layout
-    WITHOUT any manual calibration. (``center``/``base_z``/``footprint_r`` are
-    accepted for call-site compatibility but no longer used -- the detector is
-    deliberately position-independent so it works for scenes that are NOT centred
-    on the world origin and where no robot stands directly over clean ground.)
+    """World-Z of the ground floor the robot stands on, robust to scene scale,
+    position and layout WITHOUT any manual calibration. (``center``/``footprint_r``
+    are accepted for call-site compatibility but unused -- detection is
+    position-independent.) ``base_z`` is the robot mount plane (default 0): the
+    scene's authoring/conversion places the walkable floor at this height, so it
+    is the reference the floor is matched against.
 
-    Method = area-weighted histogram of UP-FACING horizontal surfaces over the
-    WHOLE scene, then take the LOWEST height whose surface area is a meaningful
-    fraction of the largest surface cluster. Rationale:
-      * Up-facing + area-weighted -> walls (vertical) and thin props/clutter
+    Method = area-weighted histogram of near-HORIZONTAL surfaces over the WHOLE
+    scene, cluster them, then pick the significant deck NEAREST ``base_z``.
+    Rationale:
+      * Horizontal + area-weighted -> walls (vertical) and thin props/clutter
         contribute almost nothing, so the floor and other broad decks dominate.
-      * "Lowest *significant* cluster" -> on a multi-level scene we lock onto the
-        actual ground even when an elevated mezzanine carries a larger deck, yet
-        we still ignore a small dimple/drain below the floor (too little area).
+      * Count a face as horizontal by |nz| (BOTH up- and down-facing), not just
+        up-facing: many GLB floors ship with flipped or double-sided normals, so
+        an up-only test silently MISSES the ground and latches onto an elevated
+        deck/mezzanine instead (this is why the gallery/office floor was detected
+        at z=3.1 instead of 0). A down-facing slab underside sits at the same
+        height as its top, so including it never moves the floor.
+      * "Significant deck NEAREST base_z" (not merely the LOWEST deck) -> the
+        robot is mounted at base_z and stands ON the floor at that height. A pure
+        "lowest" rule breaks on scenes with a raised walkable platform: e.g.
+        Sponza's robot stands on the central dais at z~0 while the surrounding
+        ground sinks to z=-0.95, so "lowest" wrongly returned -0.95. Nearest-to-
+        base_z returns the dais. On single-level scenes the nearest deck IS the
+        lowest, so this is a strict generalisation. Ties break toward the LOWER
+        deck (you rest on top of the lower of two equally-close surfaces).
       * No raycast and no origin/footprint assumption -> independent of where the
-        scene sits in XY and of any presumed robot location (a single ray under
-        the origin used to latch onto a catwalk when the origin sat under one).
+        scene sits in XY (a single ray under the origin used to latch onto a
+        catwalk when the origin happened to sit under one).
     A flat scene with no clear horizontal surface falls back to the lowest vertex.
     """
     tri = v[faces]
@@ -112,22 +124,24 @@ def _detect_floor_z(v, faces, center=(0.0, 0.0), base_z=0.0, footprint_r=1.2):
     nz = n[:, 2] / ln
     area = 0.5 * ln
     cz = tri.mean(axis=1)[:, 2]
-    up = nz > 0.85  # near-horizontal, normal pointing up
+    horiz = np.abs(nz) > 0.85  # near-horizontal, EITHER normal direction
 
-    if up.sum() >= 8:
-        h, w = cz[up], area[up]
+    if horiz.sum() >= 8:
+        h, w = cz[horiz], area[horiz]
         zlo, zhi = float(h.min()), float(h.max())
         # 5cm bins scale to any vertical extent; a flat deck lands in one bin and
-        # adjacent bins of a slightly-uneven deck both clear the threshold (we
-        # then take the lowest), so the result tracks the true ground height.
+        # adjacent bins of a slightly-uneven deck both clear the threshold.
         nb = max(12, int((zhi - zlo) / 0.05) + 1)
         hist, edges = np.histogram(h, bins=np.linspace(zlo, zhi + 1e-4, nb),
                                    weights=w)
         if hist.max() > 0:
             sig = np.nonzero(hist >= 0.25 * hist.max())[0]
             if sig.size:
-                i = int(sig[0])  # lowest significant cluster = ground floor
-                return float((edges[i] + edges[i + 1]) / 2)
+                centers = (edges[sig] + edges[sig + 1]) / 2.0
+                # floor = significant deck nearest the robot mount plane, ties
+                # broken toward the lower deck (key sorts by distance, then z).
+                best = min(centers, key=lambda z: (abs(z - base_z), z))
+                return float(best)
     # last resort (terrain/sculpted scene with no broad horizontal deck).
     return float(v[:, 2].min())
 
@@ -137,23 +151,41 @@ def _world_bounds(v):
 
 
 def _obb_world(part, M):
-    """Minimum-volume oriented bounding box of a GLB submesh in world space.
-    Returns (pos[3], quat_wxyz[4], half_extents[3], extents[3], center[3]) or None.
+    """Oriented (or axis-aligned, see below) bounding box of a GLB submesh in
+    world space. Returns (pos[3], quat_wxyz[4], half_extents[3], extents[3],
+    center[3]) or None.
+
     A box is the cheapest, most reliable MuJoCo collision primitive (no mesh edge
-    cases), and an OBB hugs furniture far better than an axis-aligned box.
+    cases). We PREFER a minimum-volume oriented box (it hugs rotated furniture
+    far better), but that needs trimesh's convex-hull path which depends on
+    scipy. If scipy is missing -- or the hull is degenerate/coplanar -- we fall
+    back to a world-axis-aligned box instead of giving up. Returning None there
+    would silently drop EVERY prop (a scene with no furniture collision), so the
+    AABB fallback is what keeps prop collision working out of the box on any
+    machine, with or without the optional scientific stack installed.
     """
     pv = trimesh.transformations.transform_points(part.vertices, M)
+    pos = quat = ext = None
     try:
         mesh = trimesh.Trimesh(vertices=pv, faces=part.faces, process=False)
         obb = mesh.bounding_box_oriented
         T = np.asarray(obb.primitive.transform, dtype=np.float64)
-        ext = np.asarray(obb.primitive.extents, dtype=np.float64)
+        e = np.asarray(obb.primitive.extents, dtype=np.float64)
+        if e is not None and not np.any(e <= 1e-4):
+            pos = T[:3, 3]
+            quat = trimesh.transformations.quaternion_from_matrix(T)  # (w,x,y,z)
+            ext = e
     except Exception:
-        return None
-    if ext is None or np.any(ext <= 1e-4):
-        return None
-    pos = T[:3, 3]
-    quat = trimesh.transformations.quaternion_from_matrix(T)  # (w, x, y, z)
+        pass  # scipy missing / coplanar / degenerate -> AABB fallback below
+    if ext is None:
+        # world-axis-aligned fallback: identity rotation, box = vertex bounds.
+        lo = pv.min(axis=0)
+        hi = pv.max(axis=0)
+        ext = hi - lo
+        if np.any(ext <= 1e-4):
+            return None
+        pos = (lo + hi) / 2.0
+        quat = np.array([1.0, 0.0, 0.0, 0.0])  # (w,x,y,z) identity
     return pos, quat, ext / 2.0, ext, pos
 
 
