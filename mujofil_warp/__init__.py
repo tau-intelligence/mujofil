@@ -133,6 +133,7 @@ def make_config(
     exposure: float = 0.0,
     tone_mapping: bool = True,
     dithering: bool = True,
+    layered: bool = False,
 ) -> "RendererConfig":
     """Build a :class:`RendererConfig` from clear keyword toggles.
 
@@ -172,6 +173,7 @@ def make_config(
     cfg.width = width
     cfg.height = height
     cfg.batch_size = batch_size
+    cfg.layered = layered
     cfg.enable_ssao = ssao
     cfg.ssao_quality = ssao_q
     cfg.ssao_ssct = ssao_ssct
@@ -258,6 +260,13 @@ class WarpRenderer:
             config = make_config(**kw)
         elif preset or toggles:
             raise TypeError("pass either `config=` or keyword toggles/`preset=`, not both")
+        # Layered (parallel-batch) rendering needs the gl_Layer material set, which
+        # is compiled separately (matc -g). Point the material loader at it BEFORE
+        # the native renderer builds its MaterialManager.
+        if getattr(config, "layered", False):
+            _lm = os.path.join(_HERE, "materials_layered")
+            if os.path.isdir(_lm):
+                os.environ["VF_MUJOCO_MATERIALS_DIR"] = _lm
         self._r = _get_native().WarpRenderer(config)
         _LIVE_WARP_RENDERERS.add(self)
 
@@ -327,6 +336,27 @@ class WarpRenderer:
         _check_cam(model, cam_id)
         ptrs = [_addr(d) for d in datas]
         return torch.from_dlpack(self._r.render_batch_dlpack(_addr(model), ptrs, cam_id))
+
+    def render_batch_layered(self, model, datas, cam_id: int = -1):
+        """LAYERED parallel batch: render N worlds in ONE instanced GPU pass.
+
+        Requires a renderer built with ``layered=True`` (and ``batch_size >= N``).
+        All N worlds render in a single draw via the forked Filament gl_Layer path
+        (NVIDIA only); per-world transforms live GPU-side in InstanceBuffers, so
+        there is no per-world CPU render loop. Returns (N, H, W, 4) uint8 torch.cuda.
+        Camera is SHARED across worlds in this milestone (fixed/overhead view).
+        """
+        import torch
+        if not self._r.layered:
+            raise RuntimeError("render_batch_layered requires a renderer built with "
+                               "layered=True (e.g. WarpRenderer(layered=True, batch_size=N))")
+        _check_cam(model, cam_id)
+        ptrs = [_addr(d) for d in datas]
+        return torch.from_dlpack(self._r.render_batch_layered_dlpack(_addr(model), ptrs, cam_id))
+
+    @property
+    def layered(self) -> bool:
+        return self._r.layered
 
     def reset_profile(self):
         self._r.reset_profile()

@@ -23,6 +23,8 @@
 #include <filament/ColorGrading.h>
 #include <utils/Entity.h>
 
+namespace filament { class RenderTarget; }
+
 namespace vf_mujoco {
 
 struct RendererConfig {
@@ -44,6 +46,11 @@ struct RendererConfig {
     bool tone_mapping = true;
     bool dithering = true;
     uint32_t batch_size = 1;   // # of swapchain images for batched rendering
+    // Parallel layered batch: render all batch_size worlds in ONE instanced draw
+    // into a (W,H,batch_size) array texture via the forked Filament gl_Layer
+    // path (NVIDIA GL only, needs the layered-batch Filament fork). Off = the
+    // existing per-world render loop.
+    bool layered = false;
 };
 
 class Renderer {
@@ -95,6 +102,17 @@ public:
     // driver loop must therefore skip the periodic flush_wait() when this is set.
     bool single_sync() const { return single_sync_; }
 
+    // --- LAYERED parallel-batch path (forked Filament gl_Layer routing) ---
+    // When the renderer is built with config_.layered (env MUJOFIL_WARP_LAYERED),
+    // it renders into ONE (W, H, batch_size) array-texture render target. The
+    // SceneBridge builds each geom instanced batch_size times, so a SINGLE
+    // render() draws all N worlds at once, each routed to its own array layer by
+    // the forked vertex shader. render_layered_to_cuda() does that one render and
+    // slices the N layers into the persistent (N, H, W, 4) CUDA buffer.
+    bool layered() const { return layered_; }
+    filament::RenderTarget* layered_render_target() const;  // for SceneBridge/View
+    void* render_layered_to_cuda();
+
     // --- profiling (ns accumulators; reset_profile() zeros them) ---
     void reset_profile();
     double prof_render_ms() const;   // beginFrame+render+endFrame
@@ -109,6 +127,7 @@ private:
     RendererConfig config_;
     bool initialized_ = false;
     bool single_sync_ = false;   // atlas/megatexture path renders all N in one frame
+    bool layered_ = false;       // forked-Filament gl_Layer array-RT parallel path
 
     filament::Engine* engine_ = nullptr;
     filament::Renderer* renderer_ = nullptr;

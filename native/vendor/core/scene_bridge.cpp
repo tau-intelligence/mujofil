@@ -693,14 +693,24 @@ GeomRenderable SceneBridge::create_renderable(
     aabb.center = filament::math::float3{(minx+maxx)/2,(miny+maxy)/2,(minz+maxz)/2};
     aabb.halfExtent = filament::math::float3{(maxx-minx)/2+0.001f,(maxy-miny)/2+0.001f,(maxz-minz)/2+0.001f};
 
-    filament::RenderableManager::Builder(1)
-        .geometry(0, filament::RenderableManager::PrimitiveType::TRIANGLES, vb, ib)
+    filament::RenderableManager::Builder builder(1);
+    builder.geometry(0, filament::RenderableManager::PrimitiveType::TRIANGLES, vb, ib)
         .material(0, mat_inst)
         .boundingBox(aabb)
         .receiveShadows(true)
         .castShadows(cast_shadows)
-        .culling(false)
-        .build(*engine, entity);
+        .culling(false);
+
+    // LAYERED parallel-batch: draw this geom instanced n_worlds_ times. Each
+    // instance is one world; the forked vertex shader routes instance w -> array
+    // layer w (gl_Layer), so a single render() draws all worlds. The InstanceBuffer
+    // holds the per-world transform for this geom (filled in sync_transforms_layered).
+    filament::InstanceBuffer* instance_buffer = nullptr;
+    if (layered_ && n_worlds_ > 1) {
+        instance_buffer = filament::InstanceBuffer::Builder(n_worlds_).build(*engine);
+        builder.instances(n_worlds_, instance_buffer);
+    }
+    builder.build(*engine, entity);
 
     renderer_.scene()->addEntity(entity);
 
@@ -709,6 +719,7 @@ GeomRenderable SceneBridge::create_renderable(
     gr.vertex_buffer = vb;
     gr.index_buffer = ib;
     gr.material_instance = mat_inst;
+    gr.instance_buffer = instance_buffer;
     gr.mj_geom_id = geom_id;
     return gr;
 }
@@ -733,6 +744,35 @@ void SceneBridge::sync_transforms(const mjModel* model, const mjData* data) {
 
         auto inst = tcm.getInstance(gr.entity);
         tcm.setTransform(inst, transform);
+    }
+}
+
+void SceneBridge::enable_layered(int n_worlds) {
+    layered_ = n_worlds > 1;
+    n_worlds_ = n_worlds > 1 ? n_worlds : 1;
+    if (layered_) world_scratch_.resize(n_worlds_);
+}
+
+void SceneBridge::sync_transforms_layered(const mjModel* model,
+                                          const std::vector<const mjData*>& datas) {
+    // For each geom renderable, fill its InstanceBuffer with that geom's WORLD
+    // transform across all N datas. Instance w -> world w -> array layer w. The
+    // renderable's own TransformManager transform stays identity, so the
+    // InstanceBuffer's local transforms ARE the absolute world poses.
+    const uint32_t n = (uint32_t)std::min<size_t>(datas.size(), (size_t)n_worlds_);
+    if (world_scratch_.size() < n_worlds_) world_scratch_.resize(n_worlds_);
+    for (auto& gr : geom_renderables_) {
+        if (gr.mj_geom_id < 0 || gr.instance_buffer == nullptr) continue;
+        for (uint32_t w = 0; w < n; ++w) {
+            const double* pos = datas[w]->geom_xpos + gr.mj_geom_id * 3;
+            const double* mat = datas[w]->geom_xmat + gr.mj_geom_id * 9;
+            world_scratch_[w] = filament::math::mat4f(
+                filament::math::float4{(float)mat[0], (float)mat[3], (float)mat[6], 0.0f},
+                filament::math::float4{(float)mat[1], (float)mat[4], (float)mat[7], 0.0f},
+                filament::math::float4{(float)mat[2], (float)mat[5], (float)mat[8], 0.0f},
+                filament::math::float4{(float)pos[0], (float)pos[1], (float)pos[2], 1.0f});
+        }
+        gr.instance_buffer->setLocalTransforms(world_scratch_.data(), n);
     }
 }
 
@@ -825,6 +865,7 @@ void SceneBridge::clear() {
         if (gr.vertex_buffer) engine->destroy(gr.vertex_buffer);
         if (gr.index_buffer) engine->destroy(gr.index_buffer);
         if (gr.material_instance) engine->destroy(gr.material_instance);
+        if (gr.instance_buffer) engine->destroy(gr.instance_buffer);
     }
     geom_renderables_.clear();
 

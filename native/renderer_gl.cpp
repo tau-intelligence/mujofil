@@ -108,6 +108,19 @@ struct Renderer::VulkanState {
     uint32_t cols = 1, rows = 1;          // tile grid
     uint32_t atlasW = 0, atlasH = 0;      // cols*W, rows*H
 
+    // --- LAYERED parallel-batch mode (config.layered, MUJOFIL_WARP_LAYERED) ---
+    // ONE (W,H,N) GL array texture, imported into Filament, attached as a LAYERED
+    // render target. SceneBridge instances each geom N times so a single render()
+    // draws all N worlds, the forked vertex shader routing world w -> array layer
+    // w via gl_Layer. The array is registered with CUDA once; each layer slices
+    // into the (N,H,W,4) buffer.
+    bool layered = false;
+    GLuint arrayTex = 0;                  // our GL_TEXTURE_2D_ARRAY (W,H,N) RGBA8
+    Texture* arrayColor = nullptr;        // Filament import of arrayTex
+    Texture* arrayDepth = nullptr;        // Filament-created (W,H,N) depth array
+    RenderTarget* arrayRT = nullptr;      // layered RT (whole array)
+    cudaGraphicsResource* arrayCudaRes = nullptr;
+
     std::vector<cudaGraphicsResource*> cudaRes;  // registered once per texture
     uint8_t* cudaBuf = nullptr;           // device linear (N,H,W,4)
     size_t cudaBytes = 0;
@@ -197,23 +210,44 @@ bool Renderer::initialize() {
     }
     single_sync_ = v.atlas;  // atlas renders all N inside one beginFrame/endFrame
 
+    // --- 1c. decide LAYERED parallel-batch mode ---------------------------
+    // config.layered (or env MUJOFIL_WARP_LAYERED) renders all N worlds in ONE
+    // instanced draw into a (W,H,N) array texture via the forked gl_Layer path.
+    // Mutually exclusive with atlas. Requires the layered Filament fork + the
+    // -g (gl_Layer) material set; the caller points VF_MUJOCO_MATERIALS_DIR at it.
+    v.layered = config_.layered || (std::getenv("MUJOFIL_WARP_LAYERED") &&
+                                    atoi(std::getenv("MUJOFIL_WARP_LAYERED")) != 0);
+    if (v.layered) { v.atlas = false; single_sync_ = true; layered_ = true; }
+
     // --- 2. GL color texture(s) we own (Filament renders into them; CUDA reads).
-    // Atlas mode: ONE (cols*W)x(rows*H) texture. Multi-RT: N WxH textures.
-    const uint32_t nTex = v.atlas ? 1u : v.n;
+    // Layered mode: ONE (W,H,N) GL_TEXTURE_2D_ARRAY. Atlas: ONE (cols*W)x(rows*H)
+    // 2D texture. Multi-RT: N WxH 2D textures.
+    const uint32_t nTex = (v.atlas || v.layered) ? 1u : v.n;
     const uint32_t texW = v.atlas ? v.atlasW : W;
     const uint32_t texH = v.atlas ? v.atlasH : H;
-    if (dbg) fprintf(stderr, "[gl] creating %u texture(s) %ux%u (atlas=%d grid %ux%u)...\n",
-                     nTex, texW, texH, (int)v.atlas, v.cols, v.rows);
-    v.glTex.resize(nTex);
-    glGenTextures(nTex, v.glTex.data());
-    for (uint32_t i = 0; i < nTex; ++i) {
-        glBindTexture(GL_TEXTURE_2D, v.glTex[i]);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, texW, texH, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    if (v.layered) {
+        if (dbg) fprintf(stderr, "[gl] creating (W,H,N)=(%u,%u,%u) array texture...\n", W, H, v.n);
+        glGenTextures(1, &v.arrayTex);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, v.arrayTex);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA8, W, H, v.n, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+        glFinish();
+    } else {
+        if (dbg) fprintf(stderr, "[gl] creating %u texture(s) %ux%u (atlas=%d grid %ux%u)...\n",
+                         nTex, texW, texH, (int)v.atlas, v.cols, v.rows);
+        v.glTex.resize(nTex);
+        glGenTextures(nTex, v.glTex.data());
+        for (uint32_t i = 0; i < nTex; ++i) {
+            glBindTexture(GL_TEXTURE_2D, v.glTex[i]);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, texW, texH, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        }
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glFinish();
     }
-    glBindTexture(GL_TEXTURE_2D, 0);
-    glFinish();
 
     // --- 3. Filament engine sharing OUR EGL context -------------------------
     if (dbg) fprintf(stderr, "[gl] building Filament engine (shared ctx=%p)...\n", (void*)v.ectx);
@@ -239,25 +273,41 @@ bool Renderer::initialize() {
     camera_->setProjection(70.0, double(W) / double(H), 0.05, 200.0);
     camera_->lookAt({3, 3, 3}, {0, 0, 0}, {0, 0, 1});
 
-    // Depth + imported color render target(s). Atlas: ONE (atlasW x atlasH)
-    // depth + ONE RT (each tile's viewport writes its own depth region).
-    // Multi-RT: ONE shared WxH depth + N WxH RTs (sequential, in-order renders).
-    const uint32_t dW = v.atlas ? v.atlasW : W;
-    const uint32_t dH = v.atlas ? v.atlasH : H;
-    v.depth = Texture::Builder().width(dW).height(dH).levels(1)
-        .format(Texture::InternalFormat::DEPTH24)
-        .usage(Texture::Usage::DEPTH_ATTACHMENT).build(*engine_);
-    v.filColor.resize(nTex);
-    v.rt.resize(nTex);
-    for (uint32_t i = 0; i < nTex; ++i) {
-        v.filColor[i] = Texture::Builder().width(texW).height(texH).levels(1)
+    // Depth + imported color render target(s). Layered: ONE (W,H,N) array color
+    // (imported) + (W,H,N) array depth + ONE layered RT (whole array). Atlas: ONE
+    // (atlasW x atlasH) depth + ONE RT. Multi-RT: ONE shared WxH depth + N RTs.
+    if (v.layered) {
+        v.arrayColor = Texture::Builder().width(W).height(H).depth(v.n).levels(1)
+            .sampler(Texture::Sampler::SAMPLER_2D_ARRAY)
             .format(Texture::InternalFormat::RGBA8)
             .usage(Texture::Usage::COLOR_ATTACHMENT | Texture::Usage::SAMPLEABLE)
-            .import((intptr_t)v.glTex[i]).build(*engine_);
-        v.rt[i] = RenderTarget::Builder()
-            .texture(RenderTarget::AttachmentPoint::COLOR0, v.filColor[i])
-            .texture(RenderTarget::AttachmentPoint::DEPTH, v.depth)
+            .import((intptr_t)v.arrayTex).build(*engine_);
+        v.arrayDepth = Texture::Builder().width(W).height(H).depth(v.n).levels(1)
+            .sampler(Texture::Sampler::SAMPLER_2D_ARRAY)
+            .format(Texture::InternalFormat::DEPTH32F)
+            .usage(Texture::Usage::DEPTH_ATTACHMENT).build(*engine_);
+        v.arrayRT = RenderTarget::Builder()
+            .texture(RenderTarget::AttachmentPoint::COLOR0, v.arrayColor)
+            .texture(RenderTarget::AttachmentPoint::DEPTH, v.arrayDepth)
             .build(*engine_);
+    } else {
+        const uint32_t dW = v.atlas ? v.atlasW : W;
+        const uint32_t dH = v.atlas ? v.atlasH : H;
+        v.depth = Texture::Builder().width(dW).height(dH).levels(1)
+            .format(Texture::InternalFormat::DEPTH24)
+            .usage(Texture::Usage::DEPTH_ATTACHMENT).build(*engine_);
+        v.filColor.resize(nTex);
+        v.rt.resize(nTex);
+        for (uint32_t i = 0; i < nTex; ++i) {
+            v.filColor[i] = Texture::Builder().width(texW).height(texH).levels(1)
+                .format(Texture::InternalFormat::RGBA8)
+                .usage(Texture::Usage::COLOR_ATTACHMENT | Texture::Usage::SAMPLEABLE)
+                .import((intptr_t)v.glTex[i]).build(*engine_);
+            v.rt[i] = RenderTarget::Builder()
+                .texture(RenderTarget::AttachmentPoint::COLOR0, v.filColor[i])
+                .texture(RenderTarget::AttachmentPoint::DEPTH, v.depth)
+                .build(*engine_);
+        }
     }
 
     // Swapchain is still required for beginFrame() even with an offscreen RT.
@@ -265,21 +315,29 @@ bool Renderer::initialize() {
 
     setup_view();
     setup_color_grading();
-    view_->setRenderTarget(v.rt[0]);
+    view_->setRenderTarget(v.layered ? v.arrayRT : v.rt[0]);
 
-    // --- 4. CUDA: register each GL texture once; allocate the linear buffer ---
+    // --- 4. CUDA: register the GL texture(s) once; allocate the linear buffer ---
     unsigned int cudaCount = 0;
     int cudaDev = 0;
     if (cudaGLGetDevices(&cudaCount, &cudaDev, 1, cudaGLDeviceListAll) == cudaSuccess && cudaCount > 0)
         v.cudaDevice = cudaDev;
     cudaSetDevice(v.cudaDevice);
-    v.cudaRes.resize(nTex, nullptr);
-    for (uint32_t i = 0; i < nTex; ++i) {
+    if (v.layered) {
         cudaError_t e = cudaGraphicsGLRegisterImage(
-            &v.cudaRes[i], v.glTex[i], GL_TEXTURE_2D, cudaGraphicsRegisterFlagsReadOnly);
+            &v.arrayCudaRes, v.arrayTex, GL_TEXTURE_2D_ARRAY, cudaGraphicsRegisterFlagsReadOnly);
         if (e != cudaSuccess)
-            throw std::runtime_error(std::string("GL renderer: cudaGraphicsGLRegisterImage: ")
+            throw std::runtime_error(std::string("GL renderer: cudaGraphicsGLRegisterImage(array): ")
                                      + cudaGetErrorString(e));
+    } else {
+        v.cudaRes.resize(nTex, nullptr);
+        for (uint32_t i = 0; i < nTex; ++i) {
+            cudaError_t e = cudaGraphicsGLRegisterImage(
+                &v.cudaRes[i], v.glTex[i], GL_TEXTURE_2D, cudaGraphicsRegisterFlagsReadOnly);
+            if (e != cudaSuccess)
+                throw std::runtime_error(std::string("GL renderer: cudaGraphicsGLRegisterImage: ")
+                                         + cudaGetErrorString(e));
+        }
     }
     v.cudaBytes = size_t(v.n) * W * H * 4;
     if (cudaMalloc(&v.cudaBuf, v.cudaBytes) != cudaSuccess)
@@ -333,6 +391,18 @@ void Renderer::setup_view() {
     }
     view_->setShadowingEnabled(config_.enable_shadows);
     view_->setDithering(config_.dithering ? View::Dithering::TEMPORAL : View::Dithering::NONE);
+
+    // LAYERED parallel-batch: the scene MUST render directly into our array
+    // render target so the vertex shader's gl_Layer routes each world to its own
+    // layer. With post-processing enabled Filament renders into its OWN
+    // single-layer intermediate and blits the result (collapsing all worlds into
+    // layer 0). So disable post-processing in layered mode (PBR + IBL still run
+    // in the material; only screen-space post/tone-map is skipped — consistent
+    // with the effects-off fast RL path). Also forces no SSAO/SSR/bloom passes.
+    if (layered_) {
+        view_->setPostProcessingEnabled(false);
+        view_->setShadowingEnabled(false);
+    }
 }
 
 void Renderer::setup_color_grading() {
@@ -445,6 +515,52 @@ void* Renderer::render_to_cuda() {
     return finish_batch_to_cuda(1);
 }
 
+filament::RenderTarget* Renderer::layered_render_target() const {
+    return vk_->arrayRT;
+}
+
+void* Renderer::render_layered_to_cuda() {
+    // The forked Filament gl_Layer path: the SceneBridge has instanced every geom
+    // batch_size times, so ONE render() draws all N worlds, each routed to its own
+    // array layer. FILAMENT_LAYERED_BATCH makes the GL backend attach the whole
+    // array texture as a layered FBO. Then slice each layer into (N,H,W,4).
+    auto& v = *vk_;
+    const uint32_t W = config_.width, H = config_.height, n = v.n;
+    setenv("FILAMENT_LAYERED_BATCH", "1", 1);
+    view_->setRenderTarget(v.arrayRT);
+    view_->setViewport({0, 0, W, H});
+
+    auto t0 = clk::now();
+    if (renderer_->beginFrame(swapchain_)) {
+        renderer_->render(view_);
+        renderer_->endFrame();
+    }
+    auto t1 = clk::now();
+    v.t_render += ns(t0, t1);
+
+    engine_->flushAndWait();
+    auto t2 = clk::now();
+    v.t_flush += ns(t1, t2);
+
+    // slice the array's N layers into the contiguous (N,H,W,4) CUDA buffer.
+    const size_t rowBytes = size_t(W) * 4;
+    const size_t slice = rowBytes * H;
+    eglMakeCurrent(v.edpy, v.esurf, v.esurf, v.ectx);
+    cudaGraphicsMapResources(1, &v.arrayCudaRes, 0);
+    for (uint32_t i = 0; i < n; ++i) {
+        cudaArray_t arr = nullptr;
+        // arrayIndex = layer i, mipLevel = 0
+        cudaGraphicsSubResourceGetMappedArray(&arr, v.arrayCudaRes, i, 0);
+        cudaMemcpy2DFromArray(v.cudaBuf + size_t(i) * slice, rowBytes,
+                              arr, 0, 0, rowBytes, H, cudaMemcpyDeviceToDevice);
+    }
+    cudaGraphicsUnmapResources(1, &v.arrayCudaRes, 0);
+    cudaDeviceSynchronize();
+    v.t_copy += ns(t2, clk::now());
+    v.n_frames += n;
+    return v.cudaBuf;
+}
+
 int Renderer::cuda_device() const { return vk_->cudaDevice; }
 
 // CPU-readback primitives are only referenced by SceneBridge::render_batch_rgb,
@@ -466,11 +582,15 @@ void Renderer::destroy() {
     auto& v = *vk_;
     for (auto* r : v.cudaRes) if (r) cudaGraphicsUnregisterResource(r);
     v.cudaRes.clear();
+    if (v.arrayCudaRes) { cudaGraphicsUnregisterResource(v.arrayCudaRes); v.arrayCudaRes = nullptr; }
     if (v.cudaBuf) { cudaFree(v.cudaBuf); v.cudaBuf = nullptr; }
     if (engine_) {
         for (auto* rt : v.rt) if (rt) engine_->destroy(rt);
         for (auto* t : v.filColor) if (t) engine_->destroy(t);
         if (v.depth) engine_->destroy(v.depth);
+        if (v.arrayRT) engine_->destroy(v.arrayRT);
+        if (v.arrayColor) engine_->destroy(v.arrayColor);
+        if (v.arrayDepth) engine_->destroy(v.arrayDepth);
         if (color_grading_) engine_->destroy(color_grading_);
         if (view_) engine_->destroy(view_);
         if (scene_) engine_->destroy(scene_);
@@ -481,7 +601,9 @@ void Renderer::destroy() {
         engine_ = nullptr;
     }
     v.rt.clear(); v.filColor.clear(); v.depth = nullptr;
+    v.arrayRT = nullptr; v.arrayColor = nullptr; v.arrayDepth = nullptr;
     if (!v.glTex.empty()) { glDeleteTextures(v.glTex.size(), v.glTex.data()); v.glTex.clear(); }
+    if (v.arrayTex) { glDeleteTextures(1, &v.arrayTex); v.arrayTex = 0; }
     if (v.ectx != EGL_NO_CONTEXT) {
         eglMakeCurrent(v.edpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
         if (v.esurf != EGL_NO_SURFACE) eglDestroySurface(v.edpy, v.esurf);

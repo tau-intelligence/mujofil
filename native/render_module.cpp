@@ -62,6 +62,10 @@ public:
         : renderer_(std::make_unique<Renderer>(cfg)) {
         renderer_->initialize();
         bridge_ = std::make_unique<SceneBridge>(*renderer_);
+        // Layered parallel-batch: tell the bridge to build each geom instanced
+        // batch_size times BEFORE the user calls load_model.
+        if (renderer_->layered() && cfg.batch_size > 1)
+            bridge_->enable_layered((int)cfg.batch_size);
     }
 
     // --- scene setup (delegates to SceneBridge) ---
@@ -131,6 +135,27 @@ public:
         return wrap(dptr, 4, renderer_->height(), renderer_->width(), n);
     }
 
+    // --- LAYERED parallel-batch render -> torch (N,H,W,4), ONE GPU pass ---
+    py::capsule render_batch_layered_dlpack(uintptr_t model,
+            const std::vector<uintptr_t>& datas, int cam) {
+        const uint32_t n = (uint32_t)datas.size();
+        void* dptr;
+        {
+            py::gil_scoped_release rel;
+            // Build the N per-world transforms into each geom's InstanceBuffer
+            // (GPU-resident), then ONE instanced render() draws all worlds into
+            // the array texture (forked gl_Layer routing) -> slice to (N,H,W,4).
+            std::vector<const mjData*> ds(n);
+            for (uint32_t i = 0; i < n; ++i) ds[i] = DATA(datas[i]);
+            bridge_->sync_transforms_layered(MODEL(model), ds);
+            // Shared camera across worlds (M1): sync once from the first world.
+            if (cam >= 0 && n > 0) bridge_->sync_camera(MODEL(model), ds[0], cam);
+            dptr = renderer_->render_layered_to_cuda();
+        }
+        return wrap(dptr, 4, renderer_->height(), renderer_->width(), n);
+    }
+
+    bool layered() const { return renderer_->layered(); }
     uint32_t width() const { return renderer_->width(); }
     uint32_t height() const { return renderer_->height(); }
 
@@ -194,7 +219,8 @@ PYBIND11_MODULE(MUJOFIL_WARP_MODULE, m) {
         .def_readwrite("exposure", &RendererConfig::exposure)
         .def_readwrite("tone_mapping", &RendererConfig::tone_mapping)
         .def_readwrite("dithering", &RendererConfig::dithering)
-        .def_readwrite("batch_size", &RendererConfig::batch_size);
+        .def_readwrite("batch_size", &RendererConfig::batch_size)
+        .def_readwrite("layered", &RendererConfig::layered);
 
     py::class_<WarpRenderer>(m, "WarpRenderer")
         .def(py::init<const RendererConfig&>(), py::arg("config"))
@@ -221,6 +247,10 @@ PYBIND11_MODULE(MUJOFIL_WARP_MODULE, m) {
         .def("render_batch_dlpack", &WarpRenderer::render_batch_dlpack,
              py::arg("model"), py::arg("datas"), py::arg("cam_id") = -1,
              "Render N worlds (one MjData each), one GPU sync; return (N,H,W,4) uint8 cuda DLPack.")
+        .def("render_batch_layered_dlpack", &WarpRenderer::render_batch_layered_dlpack,
+             py::arg("model"), py::arg("datas"), py::arg("cam_id") = -1,
+             "LAYERED: render N worlds in ONE instanced pass (forked gl_Layer); (N,H,W,4) cuda DLPack.")
+        .def_property_readonly("layered", &WarpRenderer::layered)
         .def("reset_profile", &WarpRenderer::reset_profile)
         .def("profile", &WarpRenderer::profile)
         .def_property_readonly("width", &WarpRenderer::width)

@@ -12,6 +12,7 @@
 #include <filament/VertexBuffer.h>
 #include <filament/IndexBuffer.h>
 #include <filament/RenderableManager.h>
+#include <filament/InstanceBuffer.h>
 #include <filament/TransformManager.h>
 #include <utils/Entity.h>
 #include <math/mat4.h>
@@ -33,6 +34,7 @@ struct GeomRenderable {
     filament::VertexBuffer* vertex_buffer = nullptr;
     filament::IndexBuffer* index_buffer = nullptr;
     filament::MaterialInstance* material_instance = nullptr;
+    filament::InstanceBuffer* instance_buffer = nullptr;  // layered mode: N world poses
     int mj_geom_id = -1;
     int mj_geom_type = -1;
 };
@@ -66,6 +68,16 @@ public:
     /// Sync transforms from MuJoCo simulation data to Filament entities.
     /// Call every frame before rendering.
     void sync_transforms(const mjModel* model, const mjData* data);
+
+    /// Enable LAYERED instanced mode BEFORE load_model: each geom renderable is
+    /// built instanced n_worlds times (one InstanceBuffer of n_worlds transforms),
+    /// so a single render() draws all worlds at once (forked gl_Layer routing).
+    void enable_layered(int n_worlds);
+
+    /// Layered mode per-frame sync: fill each geom's InstanceBuffer with that
+    /// geom's world pose across all N datas (datas.size() must == n_worlds).
+    void sync_transforms_layered(const mjModel* model,
+                                 const std::vector<const mjData*>& datas);
 
     /// Sync the camera to match a MuJoCo camera.
     /// cam_id: MuJoCo camera ID, or -1 for free camera.
@@ -208,6 +220,9 @@ private:
     std::unique_ptr<LightManager> light_manager_;
     std::vector<GeomRenderable> geom_renderables_;
     std::vector<uint8_t> batch_scratch_;  // reused RGBA readback buffer for render_batch_rgb
+    bool layered_ = false;                // instanced/gl_Layer parallel-batch mode
+    int n_worlds_ = 1;                    // # worlds (= array layers) in layered mode
+    std::vector<filament::math::mat4f> world_scratch_;  // reused N-transform buffer
 };
 
 } // namespace vf_mujoco
