@@ -189,10 +189,60 @@ def _obb_world(part, M):
     return pos, quat, ext / 2.0, ext, pos
 
 
+# --- optional CoACD convex decomposition (accurate concave collision) ---------
+# A single bounding box per prop fills the whole region a concave object encloses
+# (e.g. under a table, inside a shelf) with PHANTOM solid the robot wrongly hits.
+# CoACD (Collision-Aware Convex Decomposition, SIGGRAPH'22) splits the actual
+# visual mesh into a few approximately-convex pieces whose union hugs the real
+# surface; MuJoCo treats each mesh geom as its convex hull, so every piece is one
+# exact convex collider. This is how MuJoCo Menagerie / Isaac / ManiSkill build
+# concave colliders. It is OPTIONAL: if coacd isn't installed or a part is already
+# near-convex, we keep the cheap single oriented box (1 hull beats ~25).
+def _coacd_available():
+    try:
+        import coacd  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def _coacd_decompose(part_world, threshold, max_hulls):
+    """Decompose a WORLD-SPACE trimesh into <= max_hulls convex hulls. Returns a
+    list of (N,3) hull-vertex arrays (MuJoCo hulls them), or None on failure /
+    when the result wouldn't beat a single box (<=1 piece)."""
+    try:
+        import coacd
+        import logging
+        logging.getLogger("coacd").setLevel(logging.ERROR)
+        m = coacd.Mesh(np.asarray(part_world.vertices, dtype=np.float64),
+                       np.asarray(part_world.faces, dtype=np.int32))
+        pieces = coacd.run_coacd(m, threshold=threshold)
+    except Exception:
+        return None
+    hulls = []
+    for vs, _fs in pieces:
+        vs = np.asarray(vs, dtype=np.float64)
+        if vs.shape[0] >= 4:
+            # reduce to the convex-hull vertices so the inline MJCF stays small.
+            try:
+                ch = trimesh.Trimesh(vertices=vs, process=False).convex_hull
+                hulls.append(np.asarray(ch.vertices, dtype=np.float64))
+            except Exception:
+                hulls.append(vs)
+    if len(hulls) <= 1:
+        return None  # already convex -> a single OBB is cheaper and just as good
+    # keep the largest pieces if CoACD produced more than the budget allows.
+    if max_hulls and len(hulls) > max_hulls:
+        hulls.sort(key=lambda h: -(h.max(axis=0) - h.min(axis=0)).prod())
+        hulls = hulls[:max_hulls]
+    return hulls
+
+
 def build_mjcf(glb_path, M, name, out_dir, walls=True, props=True, ceiling=False,
                wall_thick=0.2, friction=(1.0, 0.005, 0.0001),
                prop_min_vol=0.01, prop_max_extent=6.0, max_props=80,
-               robot_clear_xy=0.45, robot_clear_z=1.4, floor_z=None):
+               robot_clear_xy=0.45, robot_clear_z=1.4, floor_z=None,
+               decompose=False, coacd_threshold=0.08, max_hulls_per_prop=24):
     v, faces = _load_world_mesh(glb_path, M)
     # ``floor_z`` lets the caller pin the ground plane height for scenes where the
     # auto-detector (raycast + lowest-significant-surface) can't be trusted
@@ -209,6 +259,17 @@ def build_mjcf(glb_path, M, name, out_dir, walls=True, props=True, ceiling=False
 
     os.makedirs(out_dir, exist_ok=True)
     geom_lines = []
+    mesh_assets = []          # (mesh_name, "x y z x y z ...") for decomposed props
+
+    # Resolve the decomposition mode: explicit arg, or the VF_COLLISION_DECOMPOSE
+    # env switch, gated by coacd actually being importable. If requested but
+    # unavailable we fall back to oriented boxes (with a one-time note) so the
+    # tool still works out of the box on any machine.
+    want_decomp = decompose or os.environ.get("VF_COLLISION_DECOMPOSE") == "1"
+    use_decomp = want_decomp and _coacd_available()
+    if want_decomp and not use_decomp:
+        print("note: VF_COLLISION_DECOMPOSE set but coacd not importable -> "
+              "falling back to oriented boxes (pip install coacd to enable).")
 
     # Collision flags rationale (kept on EVERY env geom):
     #   group=3      -> invisible to MuJoFil (renderer skips group>=3) and MuJoCo viewer.
@@ -252,6 +313,7 @@ def build_mjcf(glb_path, M, name, out_dir, walls=True, props=True, ceiling=False
     # reliable collision primitive. Floor/wall/ceiling sheets are skipped (already
     # covered); tiny clutter (< prop_min_vol) and the scene shell are skipped.
     n_props = 0
+    n_hulls = 0
     if props:
         scene = trimesh.load(glb_path, process=False)
         parts = _scene_parts(scene)
@@ -289,6 +351,29 @@ def build_mjcf(glb_path, M, name, out_dir, walls=True, props=True, ceiling=False
                     ax_min[1] < robot_clear_xy and ax_max[1] > -robot_clear_xy and
                     ax_min[2] < floor_z + robot_clear_z):
                 continue
+
+            # ACCURATE concave collision (optional): decompose this prop into a few
+            # convex hulls that follow its real shape, instead of one phantom-
+            # filled box. World-space vertices + geom at origin -> mesh sits where
+            # the visual sits. Falls back to the box below if it doesn't help.
+            hulls = None
+            if use_decomp:
+                pw = part.copy()
+                pw.vertices = trimesh.transformations.transform_points(
+                    part.vertices, M)
+                hulls = _coacd_decompose(pw, coacd_threshold, max_hulls_per_prop)
+            if hulls:
+                for hi, hv in enumerate(hulls):
+                    mname = f"{name}_prop_{idx}_{hi}"
+                    verts = " ".join(f"{x:.4f}" for x in hv.reshape(-1))
+                    mesh_assets.append((mname, verts))
+                    geom_lines.append(
+                        f'    <geom name="{mname}" type="mesh" mesh="{mname}" '
+                        f'pos="0 0 0" {CFLAGS} friction="{fr}" rgba="0 0 0 0"/>')
+                    n_hulls += 1
+                n_props += 1
+                continue
+
             q = " ".join(f"{x:.5f}" for x in quat)
             geom_lines.append(
                 f'    <geom name="{name}_prop_{idx}" type="box" '
@@ -297,13 +382,22 @@ def build_mjcf(glb_path, M, name, out_dir, walls=True, props=True, ceiling=False
                 f'{CFLAGS} rgba="0 0 0 0"/>')
             n_props += 1
 
+    asset_block = ""
+    if mesh_assets:
+        mesh_lines = "\n".join(
+            f'    <mesh name="{mn}" vertex="{vs}"/>' for mn, vs in mesh_assets)
+        asset_block = f"  <asset>\n{mesh_lines}\n  </asset>\n"
+
+    prop_desc = (f"{n_props} props as {n_hulls} convex hulls"
+                 if mesh_assets else f"{n_props} prop boxes")
     xml = (
         f'<mujoco model="{name}_collision">\n'
         f'  <!-- Collision-only proxy for the {name} GLB backdrop. group=3 -> invisible\n'
         f'       in MuJoFil (renderer skips group>=3) and in MuJoCo viewer. Aligned to\n'
         f'       the GLB by the same visual transform. Floor z = {floor_z:.4f} (world).\n'
-        f'       floor + walls + {n_props} prop boxes. All in worldbody -> env-env\n'
+        f'       floor + walls + {prop_desc}. All in worldbody -> env-env\n'
         f'       contacts auto-pruned (same-body rule); only the robot collides. -->\n'
+        f'{asset_block}'
         f'  <worldbody>\n'
         f'{chr(10).join(geom_lines)}\n'
         f'  </worldbody>\n'
@@ -312,8 +406,9 @@ def build_mjcf(glb_path, M, name, out_dir, walls=True, props=True, ceiling=False
     out_path = os.path.join(out_dir, f"{name}_collision.xml")
     with open(out_path, "w") as f:
         f.write(xml)
+    extra = f" hulls={n_hulls}" if mesh_assets else ""
     print(f"floor_z={floor_z:.4f}  bounds X[{bmin[0]:.1f},{bmax[0]:.1f}] "
-          f"Y[{bmin[1]:.1f},{bmax[1]:.1f}]  walls={walls} props={n_props} -> {out_path}")
+          f"Y[{bmin[1]:.1f},{bmax[1]:.1f}]  walls={walls} props={n_props}{extra} -> {out_path}")
     return out_path
 
 
@@ -355,6 +450,14 @@ def main():
     ap.add_argument("--floor-z", type=float, default=None,
                     help="pin the ground-plane Z (skip auto-detect; useful for "
                          "multi-level scenes where detection picks a mezzanine)")
+    ap.add_argument("--decompose", action="store_true",
+                    help="decompose each prop into convex hulls with CoACD so the "
+                         "collider follows concave shape (under tables, shelves) "
+                         "instead of one phantom-filled box; needs `pip install "
+                         "coacd`. Falls back to boxes if unavailable.")
+    ap.add_argument("--coacd-threshold", type=float, default=0.08,
+                    help="CoACD concavity threshold: lower = tighter fit + more "
+                         "hulls (more physics cost), higher = coarser (default 0.08)")
     ap.set_defaults(walls=True, props=True)
     args = ap.parse_args()
 
@@ -379,7 +482,8 @@ def main():
         name = args.name or os.path.splitext(os.path.basename(glb))[0]
 
     build_mjcf(glb, M, name, args.out, walls=args.walls, props=args.props,
-               ceiling=args.ceiling, floor_z=args.floor_z)
+               ceiling=args.ceiling, floor_z=args.floor_z,
+               decompose=args.decompose, coacd_threshold=args.coacd_threshold)
 
 
 if __name__ == "__main__":
