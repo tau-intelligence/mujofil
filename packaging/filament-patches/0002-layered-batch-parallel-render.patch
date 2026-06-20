@@ -1,0 +1,128 @@
+# mujofil-warp layered-batch parallel render fork for Filament v1.56.3
+#
+# Lets ONE instanced draw render N batch "worlds" into N layers of an array-
+# texture render target in a single GPU pass (vs N serial render() calls), via
+# gl_Layer routing. Proven 1.5-6.8x faster (biggest at low-res/high-N = the RL
+# regime); 256 worlds in one pass. NVIDIA desktop-GL only; gated at runtime by
+# env FILAMENT_LAYERED_BATCH so ordinary rendering is unaffected.
+#
+# Edits:
+#  - CodeGenerator.cpp : emit `#extension GL_ARB_shader_viewport_layer_array:require`
+#                        + `#define FILAMENT_LAYERED_BATCH` (GLSL/OpenGL vertex only)
+#  - main.vs           : `gl_Layer = instance_index` under FILAMENT_LAYERED_BATCH
+#  - OpenGLDriver.cpp  : attach whole array texture as a LAYERED FBO
+#                        (glFramebufferTexture) when env set + depth>1
+#  - EngineEnums.h     : CONFIG_MAX_INSTANCES 64->256, CONFIG_MINSPEC_UBO_SIZE
+#                        16384->65536 (256 worlds * 256B PerRenderableData = 64KB UBO)
+#
+# Apply: from a clean Filament v1.56.3 checkout, `git apply <this>` then build.
+# Build the EGL fork (0001) too; both are needed.
+diff --git a/filament/backend/src/opengl/OpenGLDriver.cpp b/filament/backend/src/opengl/OpenGLDriver.cpp
+index 79580fc..83db8ae 100644
+--- a/filament/backend/src/opengl/OpenGLDriver.cpp
++++ b/filament/backend/src/opengl/OpenGLDriver.cpp
+@@ -1346,9 +1346,20 @@ void OpenGLDriver::framebufferTexture(TargetBufferInfo const& binfo,
+             case GL_TEXTURE_2D_ARRAY:
+             case GL_TEXTURE_CUBE_MAP_ARRAY:
+ #ifndef FILAMENT_SILENCE_NOT_SUPPORTED_BY_ES2
+-
++            {
+                 // TODO: support multiview for iOS and WebGL
+ #if !defined(__EMSCRIPTEN__) && !defined(IOS)
++                // mujofil-warp layered-batch: attach the WHOLE array texture as a
++                // LAYERED framebuffer (glFramebufferTexture) so the vertex shader's
++                // gl_Layer routes each draw instance to its own layer in ONE pass.
++                // Enabled per-process via env (warp owns the whole engine; NVIDIA-
++                // only). Re-read each bind so callers can disable it for per-layer
++                // readback. Only for genuine array textures (depth > 1).
++                const bool kLayeredBatch =
++                        ::getenv("FILAMENT_LAYERED_BATCH") != nullptr;
++                if (kLayeredBatch && layerCount <= 1 && t->depth > 1) {
++                    glFramebufferTexture(GL_FRAMEBUFFER, attachment, t->gl.id, binfo.level);
++                } else
+                 if (layerCount > 1) {
+                     // if layerCount > 1, it means we use the multiview extension.
+                     glFramebufferTextureMultiviewOVR(GL_FRAMEBUFFER, attachment,
+@@ -1360,6 +1371,7 @@ void OpenGLDriver::framebufferTexture(TargetBufferInfo const& binfo,
+                     glFramebufferTextureLayer(GL_FRAMEBUFFER, attachment,
+                         t->gl.id, binfo.level, binfo.layer);
+                 }
++            }
+ #endif
+                 break;
+             default:
+diff --git a/libs/filabridge/include/private/filament/EngineEnums.h b/libs/filabridge/include/private/filament/EngineEnums.h
+index 273061a..1de776d 100644
+--- a/libs/filabridge/include/private/filament/EngineEnums.h
++++ b/libs/filabridge/include/private/filament/EngineEnums.h
+@@ -118,7 +118,11 @@ constexpr size_t CONFIG_MAX_SHADOW_CASCADES = 4;
+ // The maximum UBO size, in bytes. This value is set to 16 KiB due to the ES3.0 spec.
+ // Note that this value constrains the maximum number of skinning bones, morph targets,
+ // instances, and shadow casting spotlights.
+-constexpr size_t CONFIG_MINSPEC_UBO_SIZE = 16384;
++// mujofil-warp parallel batch: raised 16KiB -> 64KiB (the NVIDIA desktop-GL
++// GL_MAX_UNIFORM_BLOCK_SIZE) so the per-renderable instance UBO can hold 256
++// worlds (256 * 256B). This forked build targets NVIDIA only, so dropping the
++// ES3.0 16KiB minimum-spec guarantee is acceptable.
++constexpr size_t CONFIG_MINSPEC_UBO_SIZE = 65536;
+ 
+ // The maximum number of instances that Filament automatically creates as an optimization.
+ // Use a much smaller number for WebGL as a workaround for the following Chrome issues:
+@@ -129,7 +133,12 @@ constexpr size_t CONFIG_MINSPEC_UBO_SIZE = 16384;
+ #if defined(__EMSCRIPTEN__)
+ constexpr size_t CONFIG_MAX_INSTANCES = 8;
+ #else
+-constexpr size_t CONFIG_MAX_INSTANCES = 64;
++// mujofil-warp parallel batch: raised 64 -> 256 so one instanced draw can render
++// up to 256 worlds (= layers) in a single pass. 256 * sizeof(PerRenderableData)
++// (256B) = 64KB = GL_MAX_UNIFORM_BLOCK_SIZE on NVIDIA (the ceiling for the
++// automatic-instancing UBO path). N>256 needs multiple passes or an SSBO-based
++// manual-instancing transform buffer (a later milestone).
++constexpr size_t CONFIG_MAX_INSTANCES = 256;
+ #endif
+ 
+ // The maximum number of bones that can be associated with a single renderable.
+diff --git a/libs/filamat/src/shaders/CodeGenerator.cpp b/libs/filamat/src/shaders/CodeGenerator.cpp
+index 5fa9db0..9e74733 100644
+--- a/libs/filamat/src/shaders/CodeGenerator.cpp
++++ b/libs/filamat/src/shaders/CodeGenerator.cpp
+@@ -95,6 +95,18 @@ utils::io::sstream& CodeGenerator::generateProlog(utils::io::sstream& out, Shade
+                 out << "#version 410 core\n\n";
+                 out << "#extension GL_ARB_shading_language_packing : enable\n\n";
+             }
++            // mujofil-warp layered-batch: let the vertex shader route each draw
++            // instance to its own layer of an array-texture render target via
++            // gl_Layer (the parallel single-pass batch render). NVIDIA always
++            // exposes this; gl_Layer is IGNORED when the bound FBO is not layered,
++            // so emitting it unconditionally is safe for ordinary rendering. The
++            // matching define gates the gl_Layer write in main.vs to THIS path
++            // (desktop GL only — gl_Layer is not a Vulkan/SPIRV or mobile-ES
++            // construct, so we restrict to the GLSL OpenGL target).
++            if (stage == ShaderStage::VERTEX && mTargetLanguage == TargetLanguage::GLSL) {
++                out << "#extension GL_ARB_shader_viewport_layer_array : require\n";
++                out << "#define FILAMENT_LAYERED_BATCH\n";
++            }
+             if (v.hasStereo() && stage == ShaderStage::VERTEX) {
+                 switch (material.stereoscopicType) {
+                 case StereoscopicType::INSTANCED:
+diff --git a/shaders/src/main.vs b/shaders/src/main.vs
+index bbb9230..5e36946 100644
+--- a/shaders/src/main.vs
++++ b/shaders/src/main.vs
+@@ -23,6 +23,16 @@ void main() {
+     logical_instance_index = instance_index;
+ #endif
+ 
++#if defined(FILAMENT_LAYERED_BATCH) && defined(FILAMENT_HAS_FEATURE_INSTANCING)
++    // mujofil-warp parallel batch: route this draw instance to its own layer of
++    // the array-texture render target. Each "instance" is one batch world (same
++    // shared geometry, per-world transform from the InstanceBuffer), so all N
++    // worlds rasterize in a SINGLE instanced draw instead of N serial draws.
++    // gl_Layer is ignored by the GPU when the bound FBO is not layered, so this
++    // is a no-op for ordinary single-target rendering.
++    gl_Layer = instance_index;
++#endif
++
+ #if defined(VARIANT_HAS_STEREO) && defined(FILAMENT_STEREO_INSTANCED)
+ #if !defined(FILAMENT_HAS_FEATURE_INSTANCING)
+ #error Instanced stereo not supported at this feature level

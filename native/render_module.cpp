@@ -111,11 +111,15 @@ public:
             // that without a sync silently drops frames. So we render in waves of
             // FLUSH_EVERY and flushAndWait once per wave — far cheaper than a sync
             // per frame, while keeping every world's image distinct.
+            // EXCEPTION: the atlas/megatexture path (single_sync) shares ONE render
+            // target across all tiles, so a mid-batch flush would re-clear the
+            // atlas and lose earlier tiles — render the whole batch in one frame.
+            const bool single = renderer_->single_sync();
             for (uint32_t i = 0; i < n; ++i) {
                 bridge_->sync_transforms(MODEL(model), DATA(datas[i]));
                 if (cam >= 0) bridge_->sync_camera(MODEL(model), DATA(datas[i]), cam);
                 renderer_->render_frame_no_sync();
-                if ((i + 1) % FLUSH_EVERY == 0) renderer_->flush_wait();
+                if (!single && (i + 1) % FLUSH_EVERY == 0) renderer_->flush_wait();
             }
             renderer_->flush_wait();  // ensure the final partial wave completes
         }

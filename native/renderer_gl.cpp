@@ -38,6 +38,7 @@
 #include <utils/EntityManager.h>
 
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <stdexcept>
 #include <vector>
@@ -96,6 +97,16 @@ struct Renderer::VulkanState {
     std::vector<RenderTarget*> rt;        // N render targets
     Texture* depth = nullptr;             // shared depth (renders are sequential)
     uint32_t cur = 0;                     // next slot to render into
+
+    // --- atlas/megatexture mode (MUJOFIL_WARP_ATLAS=1) ---
+    // Instead of N distinct render targets (one per world), pack N tiles into a
+    // SINGLE atlas texture (cols x rows grid of WxH tiles). The render target
+    // never changes between tiles — only the viewport — so Filament keeps its
+    // aux buffers (SSAO/MSAA/post) configured once. glTex/filColor/rt/cudaRes
+    // hold exactly ONE element (the atlas) in this mode.
+    bool atlas = false;
+    uint32_t cols = 1, rows = 1;          // tile grid
+    uint32_t atlasW = 0, atlasH = 0;      // cols*W, rows*H
 
     std::vector<cudaGraphicsResource*> cudaRes;  // registered once per texture
     uint8_t* cudaBuf = nullptr;           // device linear (N,H,W,4)
@@ -164,15 +175,42 @@ bool Renderer::initialize() {
         throw std::runtime_error("GL renderer: eglMakeCurrent failed");
     if (dbg) fprintf(stderr, "[gl] ctx current; GL_VERSION=%s\n", (const char*)glGetString(GL_VERSION));
 
-    // --- 2. N GL textures we own (Filament renders into them; CUDA reads) ----
-    if (dbg) fprintf(stderr, "[gl] creating %u textures %ux%u...\n", v.n, W, H);
-    v.glTex.resize(v.n);
-    glGenTextures(v.n, v.glTex.data());
-    for (uint32_t i = 0; i < v.n; ++i) {
+    // --- 1b. decide atlas/megatexture mode --------------------------------
+    // Pack the N WxH tiles into ONE cols x rows atlas texture so the render
+    // target never changes per tile (only the viewport). Needs the GL context
+    // current to honor GL_MAX_TEXTURE_SIZE; falls back to multi-RT if the atlas
+    // would exceed it. n==1 and forced perFrame keep the simple per-RT path.
+    if (const char* e = std::getenv("MUJOFIL_WARP_ATLAS"))
+        v.atlas = (atoi(e) != 0) && v.n > 1 && !v.perFrame;
+    if (v.atlas) {
+        v.cols = (uint32_t)std::ceil(std::sqrt((double)v.n));
+        v.rows = (v.n + v.cols - 1) / v.cols;
+        v.atlasW = v.cols * W;
+        v.atlasH = v.rows * H;
+        GLint maxTex = 0;
+        glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTex);
+        if (maxTex > 0 && (v.atlasW > (uint32_t)maxTex || v.atlasH > (uint32_t)maxTex)) {
+            if (dbg) fprintf(stderr, "[gl] atlas %ux%u exceeds GL_MAX_TEXTURE_SIZE %d; using multi-RT\n",
+                             v.atlasW, v.atlasH, maxTex);
+            v.atlas = false;
+        }
+    }
+    single_sync_ = v.atlas;  // atlas renders all N inside one beginFrame/endFrame
+
+    // --- 2. GL color texture(s) we own (Filament renders into them; CUDA reads).
+    // Atlas mode: ONE (cols*W)x(rows*H) texture. Multi-RT: N WxH textures.
+    const uint32_t nTex = v.atlas ? 1u : v.n;
+    const uint32_t texW = v.atlas ? v.atlasW : W;
+    const uint32_t texH = v.atlas ? v.atlasH : H;
+    if (dbg) fprintf(stderr, "[gl] creating %u texture(s) %ux%u (atlas=%d grid %ux%u)...\n",
+                     nTex, texW, texH, (int)v.atlas, v.cols, v.rows);
+    v.glTex.resize(nTex);
+    glGenTextures(nTex, v.glTex.data());
+    for (uint32_t i = 0; i < nTex; ++i) {
         glBindTexture(GL_TEXTURE_2D, v.glTex[i]);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, W, H, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, texW, texH, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     }
     glBindTexture(GL_TEXTURE_2D, 0);
     glFinish();
@@ -201,14 +239,18 @@ bool Renderer::initialize() {
     camera_->setProjection(70.0, double(W) / double(H), 0.05, 200.0);
     camera_->lookAt({3, 3, 3}, {0, 0, 0}, {0, 0, 1});
 
-    // Shared depth (sequential, in-order renders) + N imported color RTs.
-    v.depth = Texture::Builder().width(W).height(H).levels(1)
+    // Depth + imported color render target(s). Atlas: ONE (atlasW x atlasH)
+    // depth + ONE RT (each tile's viewport writes its own depth region).
+    // Multi-RT: ONE shared WxH depth + N WxH RTs (sequential, in-order renders).
+    const uint32_t dW = v.atlas ? v.atlasW : W;
+    const uint32_t dH = v.atlas ? v.atlasH : H;
+    v.depth = Texture::Builder().width(dW).height(dH).levels(1)
         .format(Texture::InternalFormat::DEPTH24)
         .usage(Texture::Usage::DEPTH_ATTACHMENT).build(*engine_);
-    v.filColor.resize(v.n);
-    v.rt.resize(v.n);
-    for (uint32_t i = 0; i < v.n; ++i) {
-        v.filColor[i] = Texture::Builder().width(W).height(H).levels(1)
+    v.filColor.resize(nTex);
+    v.rt.resize(nTex);
+    for (uint32_t i = 0; i < nTex; ++i) {
+        v.filColor[i] = Texture::Builder().width(texW).height(texH).levels(1)
             .format(Texture::InternalFormat::RGBA8)
             .usage(Texture::Usage::COLOR_ATTACHMENT | Texture::Usage::SAMPLEABLE)
             .import((intptr_t)v.glTex[i]).build(*engine_);
@@ -231,8 +273,8 @@ bool Renderer::initialize() {
     if (cudaGLGetDevices(&cudaCount, &cudaDev, 1, cudaGLDeviceListAll) == cudaSuccess && cudaCount > 0)
         v.cudaDevice = cudaDev;
     cudaSetDevice(v.cudaDevice);
-    v.cudaRes.resize(v.n, nullptr);
-    for (uint32_t i = 0; i < v.n; ++i) {
+    v.cudaRes.resize(nTex, nullptr);
+    for (uint32_t i = 0; i < nTex; ++i) {
         cudaError_t e = cudaGraphicsGLRegisterImage(
             &v.cudaRes[i], v.glTex[i], GL_TEXTURE_2D, cudaGraphicsRegisterFlagsReadOnly);
         if (e != cudaSuccess)
@@ -308,23 +350,39 @@ void Renderer::render_frame_no_sync() {
     auto& v = *vk_;
     const uint32_t slot = v.cur % v.n;
     auto t0 = clk::now();
-    view_->setRenderTarget(v.rt[slot]);
-    if (v.perFrame) {
-        // Per-frame model: one beginFrame/endFrame per world (matches the old
-        // fast render_batch_rgb). On the GL backend this can pipeline better than
-        // a single mega-frame; ONE flushAndWait still syncs the whole batch.
-        renderer_->beginFrame(swapchain_);
-        renderer_->render(view_);
-        renderer_->endFrame();
-    } else {
-        // Single-frame multi-view: ONE beginFrame brackets N render() calls, each
-        // into a distinct imported RenderTarget. Avoids the frames-in-flight cap
-        // that would gate N beginFrame/endFrame pairs without a sync.
+    if (v.atlas) {
+        // Atlas: ONE render target (set once at init), ONE beginFrame brackets
+        // all N renders. Each tile renders into its grid cell via the viewport;
+        // Filament's per-frame clear fills the whole atlas once, then each
+        // viewport's render writes its cell. NEVER flush mid-batch (would
+        // re-clear and erase earlier tiles) -> single_sync() gates the loop.
+        const uint32_t col = slot % v.cols, row = slot / v.cols;
+        view_->setViewport({(int32_t)(col * config_.width), (int32_t)(row * config_.height),
+                            config_.width, config_.height});
         if (!v.frameOpen) {
             renderer_->beginFrame(swapchain_);
             v.frameOpen = true;
         }
         renderer_->render(view_);
+    } else {
+        view_->setRenderTarget(v.rt[slot]);
+        if (v.perFrame) {
+            // Per-frame model: one beginFrame/endFrame per world (matches the old
+            // fast render_batch_rgb). On the GL backend this can pipeline better than
+            // a single mega-frame; ONE flushAndWait still syncs the whole batch.
+            renderer_->beginFrame(swapchain_);
+            renderer_->render(view_);
+            renderer_->endFrame();
+        } else {
+            // Single-frame multi-view: ONE beginFrame brackets N render() calls, each
+            // into a distinct imported RenderTarget. Avoids the frames-in-flight cap
+            // that would gate N beginFrame/endFrame pairs without a sync.
+            if (!v.frameOpen) {
+                renderer_->beginFrame(swapchain_);
+                v.frameOpen = true;
+            }
+            renderer_->render(view_);
+        }
     }
     auto t1 = clk::now();
     v.t_render += ns(t0, t1);
@@ -352,14 +410,29 @@ void* Renderer::finish_batch_to_cuda(uint32_t n) {
     const size_t slice = rowBytes * H;
     auto t0 = clk::now();
     eglMakeCurrent(v.edpy, v.esurf, v.esurf, v.ectx);
-    cudaGraphicsMapResources(n, v.cudaRes.data(), 0);
-    for (uint32_t i = 0; i < n; ++i) {
+    if (v.atlas) {
+        // ONE atlas image: extract each tile's WxH region into the contiguous
+        // (N,H,W,4) buffer via offset copies (wOffset in bytes, hOffset in rows).
+        cudaGraphicsMapResources(1, &v.cudaRes[0], 0);
         cudaArray_t arr = nullptr;
-        cudaGraphicsSubResourceGetMappedArray(&arr, v.cudaRes[i], 0, 0);
-        cudaMemcpy2DFromArray(v.cudaBuf + size_t(i) * slice, rowBytes,
-                              arr, 0, 0, rowBytes, H, cudaMemcpyDeviceToDevice);
+        cudaGraphicsSubResourceGetMappedArray(&arr, v.cudaRes[0], 0, 0);
+        for (uint32_t i = 0; i < n; ++i) {
+            const uint32_t col = i % v.cols, row = i / v.cols;
+            cudaMemcpy2DFromArray(v.cudaBuf + size_t(i) * slice, rowBytes,
+                                  arr, size_t(col) * W * 4, size_t(row) * H,
+                                  rowBytes, H, cudaMemcpyDeviceToDevice);
+        }
+        cudaGraphicsUnmapResources(1, &v.cudaRes[0], 0);
+    } else {
+        cudaGraphicsMapResources(n, v.cudaRes.data(), 0);
+        for (uint32_t i = 0; i < n; ++i) {
+            cudaArray_t arr = nullptr;
+            cudaGraphicsSubResourceGetMappedArray(&arr, v.cudaRes[i], 0, 0);
+            cudaMemcpy2DFromArray(v.cudaBuf + size_t(i) * slice, rowBytes,
+                                  arr, 0, 0, rowBytes, H, cudaMemcpyDeviceToDevice);
+        }
+        cudaGraphicsUnmapResources(n, v.cudaRes.data(), 0);
     }
-    cudaGraphicsUnmapResources(n, v.cudaRes.data(), 0);
     cudaDeviceSynchronize();
     v.t_copy += ns(t0, clk::now());
     return v.cudaBuf;

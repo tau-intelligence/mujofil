@@ -89,6 +89,12 @@ public:
     void* finish_batch_to_cuda(uint32_t n);
     uint32_t batch_size() const { return config_.batch_size; }
 
+    // True when the whole batch MUST render inside ONE beginFrame/endFrame (the
+    // atlas/megatexture path): all N tiles share one render target, so a
+    // mid-batch endFrame+beginFrame would re-clear and lose earlier tiles. The
+    // driver loop must therefore skip the periodic flush_wait() when this is set.
+    bool single_sync() const { return single_sync_; }
+
     // --- profiling (ns accumulators; reset_profile() zeros them) ---
     void reset_profile();
     double prof_render_ms() const;   // beginFrame+render+endFrame
@@ -102,6 +108,7 @@ private:
 
     RendererConfig config_;
     bool initialized_ = false;
+    bool single_sync_ = false;   // atlas/megatexture path renders all N in one frame
 
     filament::Engine* engine_ = nullptr;
     filament::Renderer* renderer_ = nullptr;
