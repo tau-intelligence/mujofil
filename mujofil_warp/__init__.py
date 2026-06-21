@@ -290,6 +290,18 @@ class WarpRenderer:
     def load_glb(self, path: str):
         self._r.load_glb(path)
 
+    def load_glb_xform(self, path: str, xform16):
+        """Load a GLB backdrop placed by a column-major 4x4 transform (16 floats).
+        Use the same xform the rest of the pipeline uses (e.g. to orient a Y-up
+        scene into the MuJoCo Z-up world with the floor at z~0); without it the
+        GLB sits in its raw authored space and won't align with the MuJoCo geoms.
+        """
+        xs = [float(x) for x in (xform16.flatten() if hasattr(xform16, "flatten")
+                                 else xform16)]
+        if len(xs) != 16:
+            raise ValueError("xform16 must have 16 elements (column-major 4x4)")
+        self._r.load_glb_xform(path, xs)
+
     def load_ibl(self, ibl_ktx: str, skybox_ktx: str):
         self._r.load_ibl(ibl_ktx, skybox_ktx)
 

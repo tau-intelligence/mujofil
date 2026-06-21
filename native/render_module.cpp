@@ -76,6 +76,10 @@ public:
         bridge_->set_free_camera(ex, ey, ez, tx, ty, tz);
     }
     void load_glb(const std::string& p) { bridge_->load_glb(p); }
+    void load_glb_xform(const std::string& p, const std::vector<float>& m) {
+        if (m.size() != 16) throw std::runtime_error("load_glb_xform needs 16 floats (column-major 4x4)");
+        bridge_->load_glb_xform(p, m.data());
+    }
     void load_ibl(const std::string& ibl, const std::string& sky) { bridge_->load_ibl(ibl, sky); }
     void set_ambient_intensity(float i) { bridge_->set_ambient_intensity(i); }
     void clear_dynamic_lights() { bridge_->clear_dynamic_lights(); }
@@ -243,6 +247,7 @@ PYBIND11_MODULE(MUJOFIL_WARP_MODULE, m) {
              py::arg("model"), py::arg("data"), py::arg("cam_id") = -1)
         .def("set_free_camera", &WarpRenderer::set_free_camera)
         .def("load_glb", &WarpRenderer::load_glb)
+        .def("load_glb_xform", &WarpRenderer::load_glb_xform)
         .def("load_ibl", &WarpRenderer::load_ibl)
         .def("set_ambient_intensity", &WarpRenderer::set_ambient_intensity)
         .def("clear_dynamic_lights", &WarpRenderer::clear_dynamic_lights)

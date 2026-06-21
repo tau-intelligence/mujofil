@@ -117,6 +117,7 @@ def main():
         return
     n, res = 16, 160
     print(f"=== TILE CHECK (N={n}, res={res}) -> {OUT} ===")
+    n_fail = n_err = 0
     for key, kind, target, ibl in CASES:
         if not os.path.isfile(target):
             print(f"  SKIP {key} (missing)"); continue
@@ -128,11 +129,19 @@ def main():
         line = next((l for l in p.stdout.splitlines() if l.startswith("RESULT")), None)
         if not line:
             tail = (p.stderr.strip().splitlines() or ["<no output>"])[-1]
-            print(f"  ERROR {key} :: {tail}"); continue
+            print(f"  ERROR {key} :: {tail}"); n_err += 1; continue
         d = json.loads(line[len("RESULT "):])
-        flag = "" if (d["nonblack"] == n and d["uniq"] == n) else "  <-- CHECK"
+        ok = d["nonblack"] == n and d["uniq"] == n
+        if not ok:
+            n_fail += 1
+        flag = "" if ok else "  <-- CHECK (routing collapse: tiles not all distinct)"
         print(f"  {d['key']:<12} nonblack={d['nonblack']}/{n} uniq={d['uniq']}/{n} "
               f"max_pair={d['max_pair']:>6}  {os.path.basename(d['png'])}{flag}")
+    print(f"=== {len(CASES)-n_fail-n_err} pass, {n_fail} fail, {n_err} error ===")
+    # Real CI gate: nonzero exit if ANY environment's tiles collapsed, so this
+    # class of bug (per-world routing failure on a new scene) can never ship
+    # silently -- it fails the test suite for ANY environment, not just known ones.
+    sys.exit(1 if (n_fail or n_err) else 0)
 
 
 if __name__ == "__main__":
