@@ -334,20 +334,26 @@ class WarpRenderer:
         self._r.sync_camera(_addr(model), _addr(data), cam_id)
 
     def render(self):
-        """Render and return an (H, W, 4) uint8 torch.cuda tensor (zero-copy)."""
+        """Render and return an (H, W, 4) uint8 torch.cuda tensor."""
         import torch
-        return torch.from_dlpack(self._r.render_dlpack())
+        # Filament/OpenGL read back with a BOTTOM-left origin, so the raw buffer
+        # is vertically flipped vs MuJoCo / standard image convention (row 0 =
+        # top). Flip the height axis so callers get an upright image that matches
+        # mujoco.Renderer. (GPU flip; cheap.)
+        return torch.from_dlpack(self._r.render_dlpack()).flip(0)
 
     def render_batch(self, model, datas, cam_id: int = -1):
         """Render N worlds (one MjData each) with ONE GPU sync.
 
-        Returns an (N, H, W, 4) uint8 torch.cuda tensor (zero-copy). The renderer
-        must have been created with config.batch_size >= len(datas).
+        Returns an (N, H, W, 4) uint8 torch.cuda tensor. The renderer must have
+        been created with config.batch_size >= len(datas).
         """
         import torch
         _check_cam(model, cam_id)
         ptrs = [_addr(d) for d in datas]
-        return torch.from_dlpack(self._r.render_batch_dlpack(_addr(model), ptrs, cam_id))
+        # Flip H (axis 1) to upright -- see render() for why.
+        return torch.from_dlpack(
+            self._r.render_batch_dlpack(_addr(model), ptrs, cam_id)).flip(1)
 
     def render_batch_layered(self, model, datas, cam_id: int = -1):
         """LAYERED parallel batch: render N worlds in ONE instanced GPU pass.
@@ -374,7 +380,10 @@ class WarpRenderer:
         rgba = torch.empty_like(obj)
         rgba[..., :3] = out.to(torch.uint8)
         rgba[..., 3] = 255
-        return rgba
+        # Flip H (axis 1) to upright -- Filament/GL read back bottom-up; see
+        # render(). obj + bg share that origin so one flip of the composite is
+        # correct for both.
+        return rgba.flip(1)
 
     @property
     def layered(self) -> bool:

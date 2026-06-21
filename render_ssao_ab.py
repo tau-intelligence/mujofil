@@ -95,10 +95,7 @@ def worker(effects, out_path):
     # the floor fills the lower frame: contact AO, cast shadows, and floor
     # reflections are all in view. Tight framing keeps the busy warehouse behind.
     r.set_free_camera(1.7, -1.7, 0.85, 0.0, 0.0, 0.12)
-    img = r.render()[..., :3].cpu().numpy()   # (H,W,3) uint8
-    # The GL backend reads pixels bottom-up (OpenGL origin = lower-left), so the
-    # raw readback is vertically flipped vs image convention -> flip rows.
-    img = img[::-1].copy()
+    img = r.render()[..., :3].cpu().numpy()   # (H,W,3) uint8 upright
     from PIL import Image
     Image.fromarray(img).save(out_path)
     print(f"wrote {out_path} effects={effects}", flush=True)
