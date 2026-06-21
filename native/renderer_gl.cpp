@@ -228,6 +228,18 @@ bool Renderer::initialize() {
     v.layered = config_.layered || (std::getenv("MUJOFIL_WARP_LAYERED") &&
                                     atoi(std::getenv("MUJOFIL_WARP_LAYERED")) != 0);
     if (v.layered) { v.atlas = false; single_sync_ = true; layered_ = true; }
+    // Enable the forked layered-batch FBO attach NOW, before the array render
+    // target is ever created/configured. The backend's framebufferTexture reads
+    // this env to decide LAYERED (whole array) vs SINGLE-LAYER attach, and it
+    // CACHES that decision per render target. It runs deferred on the driver
+    // thread, so setting the env only inside the per-pass render() (as before)
+    // races: a heavy GLB backdrop can trigger the array FBO to be configured
+    // early -- before the first render's setenv -- caching a SINGLE-LAYER attach
+    // that collapses every world into layer 0 (observed on neon_street/scifi).
+    // setenv is process-global + permanent, and a depth-1 backdrop target still
+    // attaches single-layer regardless, so enabling it here unconditionally for
+    // a layered renderer is safe and removes the timing dependency.
+    if (v.layered) setenv("FILAMENT_LAYERED_BATCH", "1", 1);
     // The array texture / instanced draw is capped at MAX_PER_PASS worlds (the
     // Filament UBO instance limit). Larger batches render in chunks of this size
     // into the SAME array, each chunk copied to its slice of the (N,H,W,4) output.
