@@ -108,6 +108,77 @@ def _get_native():
     return _native
 
 
+def _preflight_check() -> None:
+    """Fail with a CLEAR, actionable message -- not a raw native crash -- when the
+    machine is missing what mujofil-warp needs: an NVIDIA GPU (the gl_Layer /
+    CUDA-interop path is NVIDIA-only) and a CUDA-enabled PyTorch (the renderer
+    delivers frames as zero-copy torch.cuda tensors). Runs once, before the native
+    renderer is constructed. Set MUJOFIL_WARP_SKIP_PREFLIGHT=1 to bypass.
+    """
+    global _preflight_done
+    if _preflight_done or os.environ.get("MUJOFIL_WARP_SKIP_PREFLIGHT") == "1":
+        return
+
+    problems = []
+
+    # 1. PyTorch with CUDA -- the package's whole value is zero-copy torch.cuda.
+    try:
+        import torch  # noqa: F401
+        try:
+            if not torch.cuda.is_available():
+                problems.append(
+                    "PyTorch is installed but reports CUDA is NOT available. "
+                    "mujofil-warp delivers frames as zero-copy CUDA tensors and "
+                    "needs a CUDA-enabled PyTorch on an NVIDIA GPU.\n"
+                    "  • Check `nvidia-smi` works and your driver is installed.\n"
+                    "  • Install a torch build matching your GPU's CUDA arch "
+                    "(e.g. cu124, or cu128 for RTX 50xx/Blackwell): "
+                    "https://pytorch.org/get-started/locally/")
+        except Exception:
+            pass  # torch present but cuda probe failed oddly -- don't block here
+    except ImportError:
+        problems.append(
+            "PyTorch is NOT installed. mujofil-warp returns rendered frames as "
+            "zero-copy torch.cuda tensors, so it needs PyTorch.\n"
+            "  • Install:  pip install \"mujofil-warp[torch]\"   (or install a "
+            "torch build for your GPU's CUDA arch from "
+            "https://pytorch.org/get-started/locally/)")
+
+    # 2. NVIDIA GPU presence (the gl_Layer parallel-batch path is NVIDIA-only).
+    #    Use a lightweight check that doesn't import torch a second time.
+    import ctypes.util
+    has_nvidia = False
+    try:
+        import torch  # noqa: F811
+        has_nvidia = bool(getattr(torch.version, "cuda", None)) and torch.cuda.is_available()
+    except Exception:
+        has_nvidia = False
+    if not has_nvidia:
+        # Secondary signal: the NVIDIA management/driver library being loadable.
+        if (ctypes.util.find_library("nvidia-ml") or
+                ctypes.util.find_library("cuda") or
+                os.path.exists("/proc/driver/nvidia/version")):
+            has_nvidia = True
+    if not has_nvidia and not any("PyTorch is NOT installed" in p for p in problems):
+        problems.append(
+            "No NVIDIA GPU/driver detected. mujofil-warp's parallel-batch "
+            "(gl_Layer) renderer and CUDA zero-copy require an NVIDIA GPU on "
+            "Linux x86_64.\n"
+            "  • Verify with `nvidia-smi`. Headless servers still need the "
+            "NVIDIA driver installed.")
+
+    if problems:
+        msg = ("mujofil-warp cannot run on this machine:\n\n" +
+               "\n\n".join(f"  ✗ {p}" for p in problems) +
+               "\n\n(Set MUJOFIL_WARP_SKIP_PREFLIGHT=1 to bypass this check.)")
+        raise RuntimeError(msg)
+
+    _preflight_done = True
+
+
+_preflight_done = False
+
+
 def __getattr__(name):  # PEP 562: lazy module attribute
     if name == "RendererConfig":
         return _get_native().RendererConfig
@@ -260,6 +331,8 @@ class WarpRenderer:
             config = make_config(**kw)
         elif preset or toggles:
             raise TypeError("pass either `config=` or keyword toggles/`preset=`, not both")
+        # Clear, actionable error (not a raw native abort) if torch/NVIDIA are missing.
+        _preflight_check()
         # Layered (parallel-batch) rendering needs the gl_Layer material set, which
         # is compiled separately (matc -g). Point the material loader at it BEFORE
         # the native renderer builds its MaterialManager.
