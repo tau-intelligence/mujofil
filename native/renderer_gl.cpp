@@ -48,6 +48,15 @@ using namespace filament;
 #ifndef GL_RGBA8
 #define GL_RGBA8 0x8058
 #endif
+#ifndef GL_SRGB8_ALPHA8
+#define GL_SRGB8_ALPHA8 0x8C43
+#endif
+#ifndef GL_RGBA16F
+#define GL_RGBA16F 0x881A
+#endif
+#ifndef GL_HALF_FLOAT
+#define GL_HALF_FLOAT 0x140B
+#endif
 
 namespace vf_mujoco {
 
@@ -258,7 +267,12 @@ bool Renderer::initialize() {
         glBindTexture(GL_TEXTURE_2D_ARRAY, v.arrayTex);
         glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA8, W, H, v.layers, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        // FLOAT16 HDR: the objects pass runs post-processing OFF and writes LINEAR
+        // shaded colour. A half-float RT stores it WITHOUT 8-bit quantization, so
+        // the Python auto-exposure + FILMIC tone map can lift dark indoor regions
+        // with no posterisation/banding (an 8-bit linear or sRGB RT bands under the
+        // exposure gain). 8 bytes/texel; Python reads it back as float16.
+        glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA16F, W, H, v.layers, 0, GL_RGBA, GL_HALF_FLOAT, nullptr);
         glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
         // Backdrop scratch: a single (W,H) 2D texture for the shared environment.
         glGenTextures(1, &v.backdropTex);
@@ -313,7 +327,7 @@ bool Renderer::initialize() {
     if (v.layered) {
         v.arrayColor = Texture::Builder().width(W).height(H).depth(v.layers).levels(1)
             .sampler(Texture::Sampler::SAMPLER_2D_ARRAY)
-            .format(Texture::InternalFormat::RGBA8)
+            .format(Texture::InternalFormat::RGBA16F)
             .usage(Texture::Usage::COLOR_ATTACHMENT | Texture::Usage::SAMPLEABLE)
             .import((intptr_t)v.arrayTex).build(*engine_);
         v.arrayDepth = Texture::Builder().width(W).height(H).depth(v.layers).levels(1)
@@ -397,7 +411,10 @@ bool Renderer::initialize() {
                                          + cudaGetErrorString(e));
         }
     }
-    v.cudaBytes = size_t(v.n) * W * H * 4;
+    // Layered objects buffer is RGBA16F (8 bytes/texel); all other paths are
+    // RGBA8 (4 bytes/texel).
+    const size_t bppOut = v.layered ? 8u : 4u;
+    v.cudaBytes = size_t(v.n) * W * H * bppOut;
     if (cudaMalloc(&v.cudaBuf, v.cudaBytes) != cudaSuccess)
         throw std::runtime_error("GL renderer: cudaMalloc failed");
 
@@ -654,7 +671,7 @@ void Renderer::render_layered_objects(uint32_t out_offset, uint32_t count) {
     auto t1 = clk::now();
     v.t_render += ns(t0, t1);
 
-    const size_t rowBytes = size_t(W) * 4;
+    const size_t rowBytes = size_t(W) * 8;   // RGBA16F = 8 bytes/texel
     const size_t slice = rowBytes * H;
     eglMakeCurrent(v.edpy, v.esurf, v.esurf, v.ectx);
     cudaGraphicsMapResources(1, &v.arrayCudaRes, 0);

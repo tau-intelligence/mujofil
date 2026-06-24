@@ -215,3 +215,12 @@ file(GLOB PREBUILT_MATERIALS "${CMAKE_SOURCE_DIR}/mujofil_warp/materials/*.filam
 if(PREBUILT_MATERIALS)
     install(FILES ${PREBUILT_MATERIALS} DESTINATION mujofil_warp/materials)
 endif()
+
+# Layered (gl_Layer) material set for the parallel-batch / egocentric path. These
+# are compiled with the FORKED matc (-g) so they carry the gl_Layer write + the
+# textured_pbr normal/MR/emissive maps; ship them alongside the standard set
+# (mujofil_warp/__init__.py points VF_MUJOCO_MATERIALS_DIR here when layered=True).
+file(GLOB PREBUILT_MATERIALS_LAYERED "${CMAKE_SOURCE_DIR}/mujofil_warp/materials_layered/*.filamat")
+if(PREBUILT_MATERIALS_LAYERED)
+    install(FILES ${PREBUILT_MATERIALS_LAYERED} DESTINATION mujofil_warp/materials_layered)
+endif()

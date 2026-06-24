@@ -1,0 +1,26 @@
+material {
+    name : "Default PBR Layered",
+    shadingModel : lit,
+    blending : opaque,
+    parameters : [
+        { type : float4, name : baseColor },
+        { type : float,  name : roughness },
+        { type : float,  name : metallic },
+        { type : float,  name : reflectance },
+        { type : float3, name : emissive }
+    ],
+    requires : [
+        position
+    ]
+}
+
+fragment {
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);
+        material.baseColor = materialParams.baseColor;
+        material.roughness = materialParams.roughness;
+        material.metallic = materialParams.metallic;
+        material.reflectance = materialParams.reflectance;
+        material.emissive = vec4(materialParams.emissive, 1.0);
+    }
+}

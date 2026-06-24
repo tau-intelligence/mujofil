@@ -1,0 +1,80 @@
+material {
+    name : "Textured PBR Layered",
+    shadingModel : lit,
+    blending : opaque,
+    parameters : [
+        { type : float4,          name : baseColor },
+        { type : float,           name : roughness },
+        { type : float,           name : metallic },
+        { type : float,           name : reflectance },
+        { type : float3,          name : emissive },
+        { type : float2,          name : uvscale },
+        { type : bool,            name : useAlbedo },
+        { type : bool,            name : useCube },
+        { type : bool,            name : useNormal },
+        { type : bool,            name : useMR },
+        { type : bool,            name : useEmissiveMap },
+        { type : sampler2d,       name : albedoMap },
+        { type : samplerCubemap,  name : cubeMap },
+        { type : sampler2d,       name : normalMap },
+        { type : sampler2d,       name : mrMap },
+        { type : sampler2d,       name : emissiveMap }
+    ],
+    variables : [
+        localDir
+    ],
+    requires : [
+        uv0,
+        tangents,
+        position
+    ]
+}
+
+vertex {
+    void materialVertex(inout MaterialVertexInputs material) {
+        // Object-space position direction, used for MuJoCo cube texture mapping.
+        material.localDir = getPosition();
+    }
+}
+
+fragment {
+    void material(inout MaterialInputs material) {
+        vec2 uv = getUV0() * materialParams.uvscale;
+
+        // Tangent-space normal map must be set BEFORE prepareMaterial(), which
+        // applies the TBN frame (from the tangents attribute) to produce the
+        // world-space shading normal.
+        if (materialParams.useNormal) {
+            material.normal = texture(materialParams_normalMap, uv).xyz * 2.0 - 1.0;
+        }
+
+        prepareMaterial(material);
+
+        vec4 base = materialParams.baseColor;
+        if (materialParams.useAlbedo) {
+            base *= texture(materialParams_albedoMap, uv);
+        } else if (materialParams.useCube) {
+            vec3 dir = normalize(variable_localDir.xyz);
+            base *= textureLod(materialParams_cubeMap, dir, 0.0);
+        }
+        material.baseColor = base;
+
+        // glTF metallic-roughness map: G = roughness, B = metallic (linear data).
+        float rough = materialParams.roughness;
+        float metal = materialParams.metallic;
+        if (materialParams.useMR) {
+            vec3 mr = texture(materialParams_mrMap, uv).rgb;
+            rough *= mr.g;
+            metal *= mr.b;
+        }
+        material.roughness = rough;
+        material.metallic = metal;
+        material.reflectance = materialParams.reflectance;
+
+        vec3 em = materialParams.emissive;
+        if (materialParams.useEmissiveMap) {
+            em *= texture(materialParams_emissiveMap, uv).rgb;
+        }
+        material.emissive = vec4(em, 1.0);
+    }
+}

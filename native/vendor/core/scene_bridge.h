@@ -37,6 +37,12 @@ struct GeomRenderable {
     filament::InstanceBuffer* instance_buffer = nullptr;  // layered mode: N world poses
     int mj_geom_id = -1;
     int mj_geom_type = -1;
+    // STATIC instanced env mesh (e.g. a GLB photoreal environment ingested into the
+    // layered instanced path): its world pose is FIXED (base_xform), the same in
+    // every world, view-folded per world in egocentric mode. Unlike MuJoCo geoms
+    // it is not driven by mj_geom_id (which stays -1).
+    bool static_instanced = false;
+    filament::math::mat4f base_xform{};  // identity by default
 };
 
 /// Fully resolved appearance for one geom: PBR scalars + optional MuJoCo texture.
@@ -79,6 +85,16 @@ public:
     void sync_transforms_layered(const mjModel* model,
                                  const std::vector<const mjData*>& datas);
 
+    /// Layered EGOCENTRIC setup: give each world its OWN camera (e.g. a robot-
+    /// mounted MuJoCo camera) in the single instanced draw. Computes each world's
+    /// view matrix V_w and binds a shared projection-only camera; sync_transforms_
+    /// layered then folds V_w into each world's InstanceBuffer transform. cam_id < 0
+    /// disables egocentric (shared-camera path, byte-identical). Call BEFORE
+    /// sync_transforms_layered.
+    void sync_cameras_layered(const mjModel* model,
+                              const std::vector<const mjData*>& datas,
+                              int cam_id);
+
     /// Sync the camera to match a MuJoCo camera.
     /// cam_id: MuJoCo camera ID, or -1 for free camera.
     void sync_camera(const mjModel* model, const mjData* data, int cam_id = -1);
@@ -106,6 +122,26 @@ public:
 
     /// Load a GLB file with a full 4x4 transform matrix (column-major).
     void load_glb_xform(const std::string& path, const float* mat4x4);
+
+    /// Ingest ONE mesh of a GLB environment as an INSTANCED LAYERED renderable so
+    /// it participates in the single-draw parallel-batch path AND in per-world
+    /// egocentric cameras (view-folding) -- unlike load_glb*, which adds the GLB as
+    /// a single shared non-instanced backdrop that cannot be egocentric. Geometry
+    /// is given in WORLD space (caller bakes the scene transform into the verts).
+    /// positions/normals: vert_count*3 floats each. uvs: vert_count*2 or null.
+    /// indices: index_count uint32. albedo_rgba: tex_w*tex_h*4 bytes or null.
+    /// Requires layered mode (enable_layered) to have been set before load_model.
+    void add_layered_env_mesh(
+        const float* positions, const float* normals, int vert_count,
+        const float* uvs, const float* tangents4,
+        const uint32_t* indices, int index_count,
+        float r, float g, float b, float a,
+        float roughness, float metallic,
+        float emissive_r, float emissive_g, float emissive_b,
+        const uint8_t* albedo_rgba, int albedo_w, int albedo_h,
+        const uint8_t* normal_rgba, int normal_w, int normal_h,
+        const uint8_t* mr_rgba, int mr_w, int mr_h,
+        const uint8_t* emissive_rgba, int emissive_w, int emissive_h);
 
     /// Load IBL environment map from KTX files (cmgen output).
     void load_ibl(const std::string& ibl_path, const std::string& skybox_path,
@@ -213,7 +249,8 @@ private:
                                      filament::MaterialInstance* mat_inst,
                                      int geom_id,
                                      const std::vector<float>& uvs = {},
-                                     bool cast_shadows = true);
+                                     bool cast_shadows = true,
+                                     const std::vector<float>& tangents4 = {});
 
     Renderer& renderer_;
     std::unique_ptr<MaterialManager> material_manager_;
@@ -223,6 +260,30 @@ private:
     bool layered_ = false;                // instanced/gl_Layer parallel-batch mode
     int n_worlds_ = 1;                    // # worlds (= array layers) in layered mode
     std::vector<filament::math::mat4f> world_scratch_;  // reused N-transform buffer
+
+    // Egocentric (per-world camera) layered support via VIEW-FOLDING: each world's
+    // view matrix V_w is folded into that world's InstanceBuffer transform
+    // (localTransform_w = V_w * geomPose_w) and a shared projection-only camera is
+    // bound, so position = P * V_w * geomPose_w * vert renders each world from its
+    // own camera in one instanced draw -- using only the proven per-instance
+    // transform + frame-uniform projection (no per-instance clip matrix, which
+    // miscompiles in the layered vertex shader on this GL driver). cam_scratch_
+    // camera builds V_w / P; egocentric_view_ holds the per-world V_w used by
+    // sync_transforms_layered.
+    filament::Camera* cam_scratch_camera_ = nullptr;
+    utils::Entity cam_scratch_entity_;
+    std::vector<filament::math::mat4f> egocentric_view_;   // per-world V_w
+    bool egocentric_ = false;
+    // Saved bound-camera state captured on the shared->egocentric transition and
+    // restored on egocentric->shared, so mixing the two modes on one renderer is
+    // robust (egocentric binds a projection-only camera that would otherwise leak
+    // into a later shared-camera render).
+    bool have_saved_cam_ = false;
+    filament::math::mat4 saved_cam_model_;
+    filament::math::mat4 saved_cam_proj_;
+    double saved_cam_near_ = 0.05;
+    double saved_cam_far_ = 200.0;
+    int env_tex_key_ = -100000;   // unique cache keys for ingested GLB-env textures
 };
 
 } // namespace vf_mujoco

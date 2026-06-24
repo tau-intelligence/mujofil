@@ -1,0 +1,35 @@
+material {
+    name : "Ground Grid Layered",
+    shadingModel : lit,
+    blending : opaque,
+    parameters : [
+        { type : float4, name : baseColor },
+        { type : float4, name : gridColor },
+        { type : float,  name : gridScale },
+        { type : float,  name : gridWidth },
+        { type : float,  name : roughness }
+    ],
+    requires : [
+        uv0,
+        position
+    ]
+}
+
+fragment {
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);
+
+        // Procedural grid pattern
+        float2 worldPos = getWorldPosition().xy;
+        float2 grid = abs(fract(worldPos * materialParams.gridScale - 0.5) - 0.5);
+        float line = min(grid.x, grid.y);
+        float gridMask = 1.0 - smoothstep(0.0, materialParams.gridWidth, line);
+
+        float4 color = mix(materialParams.baseColor, materialParams.gridColor, gridMask);
+
+        material.baseColor = color;
+        material.roughness = materialParams.roughness;
+        material.metallic = 0.0;
+        material.reflectance = 0.5;
+    }
+}

@@ -18,7 +18,7 @@ try:  # single source of truth = the installed wheel's metadata (pyproject versi
     from importlib.metadata import version as _pkg_version
     __version__ = _pkg_version("mujofil-warp")
 except Exception:  # editable/source checkout without metadata
-    __version__ = "0.1.6"
+    __version__ = "0.1.7"
 
 # Live renderers, closed deterministically at interpreter exit so the native
 # Filament/CUDA teardown runs while the interpreter is healthy -- not during the
@@ -40,6 +40,11 @@ def _close_all_warp_renderers() -> None:
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
+
+# Auto-exposure target for the layered tone-map path: the 90th-percentile LINEAR
+# luminance of the lit pixels is scaled to this value before the FILMIC curve, so
+# highlights land just below the shoulder. Deterministic, scene-independent.
+_AE_TARGET = float(os.environ.get("MUJOFIL_AE_TARGET", "1.2"))
 _DEV_NATIVE = os.path.normpath(os.path.join(_HERE, os.pardir, "native"))
 if os.path.isdir(_DEV_NATIVE) and _DEV_NATIVE not in sys.path:
     sys.path.insert(0, _DEV_NATIVE)
@@ -265,31 +270,34 @@ def make_config(
 #
 # THE TWO HEADLINE PRESETS (the ones to use):
 #   eval   -- full photoreal fidelity (ULTRA SSAO + cone tracing + 4x MSAA +
-#             shadows). Use for evaluation videos, cinematics, sim-to-real demos
-#             -- anything a HUMAN watches.
-#   train  -- throughput-optimised observations for batched vision-RL. SSAO and
-#             MSAA OFF (keeps PBR materials, IBL, shadows). Measured ~2x faster
-#             than ``eval`` (RTX 4060, 128px N=256: 8196 vs 4008 cam/s) with no
-#             impact on what a CNN policy learns -- SSAO subtlety and 4x MSAA
-#             edges are imperceptible to a 128px conv stack, so this spends
-#             fidelity only where it is actually perceived.
+#             shadows + screen-space reflections). Use for evaluation videos,
+#             cinematics, sim-to-real demos -- anything a HUMAN watches.
+#   train  -- throughput-optimised observations for batched vision-RL. The
+#             per-view screen-space passes -- SSAO, SSR (reflections) and 4x MSAA
+#             -- are OFF; full PBR materials, textures, IBL, FILMIC tone mapping
+#             and shadows are KEPT. Those screen-space passes run once PER VIEW
+#             (N times in a batch) and are imperceptible to a low-res conv policy,
+#             so dropping them is pure throughput. Measured ~4.7x faster than
+#             ``eval`` at 128px N=64 (RTX 4060, photoreal cafe 1442 -> 6742 cam/s)
+#             with the materials/lighting unchanged -- the image stays photoreal,
+#             not flat. SSR was the dominant hidden cost.
 #
 # Finer-grained presets (kept for reproducing the benchmark trade-off curve):
 #   high == eval; fast/medium/raw are intermediate points; ultra adds 8x MSAA+bloom.
 QUALITY_PRESETS = {
     # --- the two you should reach for ---
     "eval": dict(ssao=True, ssao_quality="ultra", ssao_ssct=True,
-                 shadows=True, msaa=True, msaa_samples=4),
-    "train": dict(ssao=False, shadows=True, msaa=False),
+                 shadows=True, msaa=True, msaa_samples=4, ssr=True),
+    "train": dict(ssao=False, ssr=False, shadows=True, msaa=False),
     # --- intermediate / benchmark points ---
     "high": dict(ssao=True, ssao_quality="ultra", ssao_ssct=True,
-                 shadows=True, msaa=True, msaa_samples=4),
+                 shadows=True, msaa=True, msaa_samples=4, ssr=True),
     "medium": dict(ssao=True, ssao_quality="high", ssao_ssct=False,
-                   shadows=True, msaa=True, msaa_samples=4),
-    "fast": dict(ssao=False, shadows=True, msaa=True, msaa_samples=4),
+                   shadows=True, msaa=True, msaa_samples=4, ssr=False),
+    "fast": dict(ssao=False, ssr=False, shadows=True, msaa=True, msaa_samples=4),
     "ultra": dict(ssao=True, ssao_quality="ultra", ssao_ssct=True,
-                  shadows=True, msaa=True, msaa_samples=8, bloom=True),
-    "raw": dict(ssao=False, shadows=False, msaa=False),
+                  shadows=True, msaa=True, msaa_samples=8, bloom=True, ssr=True),
+    "raw": dict(ssao=False, ssr=False, shadows=False, msaa=False),
 }
 
 
@@ -341,6 +349,14 @@ class WarpRenderer:
             if os.path.isdir(_lm):
                 os.environ["VF_MUJOCO_MATERIALS_DIR"] = _lm
         self._r = _get_native().WarpRenderer(config)
+        # Capture the camera exposure (EV) so the layered compositor can apply the
+        # SAME deterministic FILMIC+exposure tonemap Filament's post-processing
+        # applies in the render_batch path (the layered OBJECTS pass runs with
+        # post-processing OFF to preserve gl_Layer routing, so we replicate it).
+        self._exposure_ev = float(getattr(config, "exposure", 0.0) or 0.0)
+        # True once a GLB environment is ingested into the layered objects pass
+        # (load_glb_layered) -> the layered compositor tonemaps it deterministically.
+        self._has_layered_env = False
         _LIVE_WARP_RENDERERS.add(self)
 
     def close(self) -> None:
@@ -374,6 +390,190 @@ class WarpRenderer:
         if len(xs) != 16:
             raise ValueError("xform16 must have 16 elements (column-major 4x4)")
         self._r.load_glb_xform(path, xs)
+
+    def load_glb_layered(self, path: str, xform16=None, max_tex: int = 1024):
+        """Ingest a GLB ENVIRONMENT into the INSTANCED LAYERED path so it works
+        with per-world EGOCENTRIC cameras in the single parallel draw (unlike
+        ``load_glb*`` which adds the GLB as one shared, non-instanced backdrop that
+        can only be rendered from a shared camera).
+
+        The GLB is parsed (trimesh), each mesh baked into world space by ``xform16``
+        (column-major 4x4, same convention as ``load_glb_xform``; identity if None),
+        and handed to the native instanced layered pipeline with its base colour +
+        albedo texture. Then ``render_batch_layered(cam_id=ego)`` renders every
+        world's egocentric view of the FULL environment in ONE instanced draw.
+
+        Fidelity note: only base colour + albedo map are carried over (the layered
+        material set has no normal/MR/emissive maps); this is an RL-observation
+        grade ingest, not a hero-shot path. Requires ``layered=True``.
+        """
+        import numpy as np
+        try:
+            import trimesh
+        except Exception as e:
+            raise RuntimeError("load_glb_layered needs trimesh (pip install trimesh)") from e
+        if not getattr(self._r, "layered", False):
+            raise RuntimeError("load_glb_layered requires a renderer built with layered=True")
+
+        # column-major 4x4 -> row-major numpy for point transforms
+        if xform16 is None:
+            M = np.eye(4, dtype=np.float64)
+        else:
+            xs = np.asarray(xform16, dtype=np.float64).reshape(-1)
+            if xs.size != 16:
+                raise ValueError("xform16 must have 16 elements (column-major 4x4)")
+            M = xs.reshape(4, 4, order="F")     # column-major -> (row,col)
+        R = M[:3, :3]
+
+        scene = trimesh.load(path, process=False, force="scene")
+        # dump(concatenate=False) bakes each mesh's node transform into its verts
+        meshes = scene.dump(concatenate=False) if hasattr(scene, "dump") else [scene]
+        n_added = 0
+
+        def _tex_bytes(img, max_px):
+            """PIL/ndarray glTF texture -> (rgba_bytes, w, h) or (b'', 0, 0)."""
+            if img is None:
+                return b"", 0, 0
+            from PIL import Image as _Im
+            im = img if isinstance(img, _Im.Image) else _Im.fromarray(np.asarray(img))
+            im = im.convert("RGBA")
+            if max(im.size) > max_px:
+                s = max_px / max(im.size)
+                im = im.resize((max(1, int(im.size[0]*s)), max(1, int(im.size[1]*s))))
+            arr = np.asarray(im, dtype=np.uint8)
+            return arr.tobytes(), int(arr.shape[1]), int(arr.shape[0])
+
+        def _same_image(a, b):
+            """True if two glTF textures are the same image (exporter dup detect)."""
+            try:
+                aa = np.asarray(a.convert("RGB") if hasattr(a, "convert") else a)
+                bb = np.asarray(b.convert("RGB") if hasattr(b, "convert") else b)
+                return aa.shape == bb.shape and np.array_equal(aa, bb)
+            except Exception:
+                return False
+
+        def _uv_tangents(v, faces, uv, nrm):
+            """Per-vertex UV-aligned tangent (T.xyz, handedness) for normal maps.
+            Standard Lengyel accumulation, vectorised."""
+            tan1 = np.zeros((len(v), 3), np.float64)
+            tan2 = np.zeros((len(v), 3), np.float64)
+            f = faces.reshape(-1, 3)
+            i0, i1, i2 = f[:, 0], f[:, 1], f[:, 2]
+            e1 = v[i1] - v[i0]; e2 = v[i2] - v[i0]
+            du1 = uv[i1] - uv[i0]; du2 = uv[i2] - uv[i0]
+            denom = (du1[:, 0]*du2[:, 1] - du2[:, 0]*du1[:, 1])
+            rinv = np.where(np.abs(denom) > 1e-12, 1.0/np.where(denom == 0, 1, denom), 0.0)
+            sdir = (e1*du2[:, 1:2] - e2*du1[:, 1:2]) * rinv[:, None]
+            tdir = (e2*du1[:, 0:1] - e1*du2[:, 0:1]) * rinv[:, None]
+            for arr, src in ((tan1, sdir), (tan2, tdir)):
+                np.add.at(arr, i0, src); np.add.at(arr, i1, src); np.add.at(arr, i2, src)
+            n = nrm
+            ndt = np.einsum("ij,ij->i", n, tan1)
+            t = tan1 - n * ndt[:, None]
+            tl = np.linalg.norm(t, axis=1, keepdims=True)
+            t = np.where(tl > 1e-8, t / np.where(tl == 0, 1, tl), np.array([1.0, 0, 0]))
+            # handedness
+            cross = np.cross(n, tan1)
+            w = np.where(np.einsum("ij,ij->i", cross, tan2) < 0.0, -1.0, 1.0)
+            return np.concatenate([t, w[:, None]], axis=1).astype(np.float32)
+
+        for mesh in meshes:
+            if not hasattr(mesh, "vertices") or len(mesh.vertices) == 0:
+                continue
+            v = np.asarray(mesh.vertices, dtype=np.float64)
+            # to world: apply the scene xform (mesh node transform already baked)
+            vw = (v @ R.T) + M[:3, 3]
+            if mesh.vertex_normals is not None and len(mesh.vertex_normals) == len(v):
+                nw = np.asarray(mesh.vertex_normals, dtype=np.float64) @ R.T
+                nl = np.linalg.norm(nw, axis=1, keepdims=True)
+                nw = np.where(nl > 1e-9, nw / np.where(nl == 0, 1, nl), np.array([0.0, 0, 1.0]))
+            else:
+                nw = np.zeros_like(vw); nw[:, 2] = 1.0
+            faces = np.asarray(mesh.faces, dtype=np.uint32).reshape(-1)
+
+            # material: base colour factor + glTF map set (albedo/normal/MR/emissive)
+            r = g = b = a = 1.0
+            rough, metal = 1.0, 1.0       # factors; modulated by the MR map if present
+            er = eg = eb = 0.0
+            uvs = None
+            alb = nrm_b = mr_b = em_b = b""
+            aw = ah = nwid = nh = mw = mh = ew = eh = 0
+            vis = getattr(mesh, "visual", None)
+            mat = getattr(vis, "material", None)
+            uv = getattr(vis, "uv", None)
+            has_uv = uv is not None and len(uv) == len(v)
+            if mat is not None:
+                bcf = getattr(mat, "baseColorFactor", None)
+                if bcf is not None:
+                    c = np.asarray(bcf, dtype=np.float64).reshape(-1) / (
+                        255.0 if np.asarray(bcf).max() > 1.5 else 1.0)
+                    r, g, b = float(c[0]), float(c[1]), float(c[2])
+                    a = float(c[3]) if c.size > 3 else 1.0
+                rf = getattr(mat, "roughnessFactor", None)
+                mf = getattr(mat, "metallicFactor", None)
+                if rf is not None:
+                    rough = float(rf)
+                if mf is not None:
+                    metal = float(mf)
+                ef = getattr(mat, "emissiveFactor", None)
+                if ef is not None:
+                    ec = np.asarray(ef, dtype=np.float64).reshape(-1)
+                    er, eg, eb = float(ec[0]), float(ec[1]), float(ec[2])
+                if has_uv:
+                    alb, aw, ah = _tex_bytes(
+                        getattr(mat, "baseColorTexture", None) or getattr(mat, "image", None),
+                        max_tex)
+                    nrm_b, nwid, nh = _tex_bytes(getattr(mat, "normalTexture", None), max_tex)
+                    mr_b, mw, mh = _tex_bytes(getattr(mat, "metallicRoughnessTexture", None), max_tex)
+                    # glTF: emissive = emissiveFactor * emissiveTexture. A zero
+                    # factor means NO emission regardless of the texture, so only
+                    # sample the map when the factor is non-zero (else surfaces
+                    # would wrongly glow at full strength).
+                    if er > 0.0 or eg > 0.0 or eb > 0.0:
+                        etex = getattr(mat, "emissiveTexture", None)
+                        # Robustness: some exporters DUPLICATE the base-colour map
+                        # into the emissive slot with emissiveFactor=[1,1,1]. That
+                        # makes every surface emit its own albedo (doubled, posterised
+                        # glow -- e.g. a floor "glowing"). When the emissive map is
+                        # the same image object/bytes as the albedo map, treat it as
+                        # an export artifact and drop the emissive (a genuinely
+                        # emissive surface uses a DISTINCT map).
+                        base_img = getattr(mat, "baseColorTexture", None) or getattr(mat, "image", None)
+                        if etex is not None and base_img is not None and (
+                                etex is base_img or _same_image(etex, base_img)):
+                            etex = None
+                        if etex is not None:
+                            em_b, ew, eh = _tex_bytes(etex, max_tex)
+            if has_uv:
+                uvv = np.asarray(uv, dtype=np.float32).copy()
+                uvv[:, 1] = 1.0 - uvv[:, 1]          # glTF/Filament V flip
+                uvs = uvv.reshape(-1).tolist()
+                # UV-aligned tangents (only needed when a normal map is present)
+                if nrm_b:
+                    tang = _uv_tangents(vw, faces, uvv.astype(np.float64), nw)
+                    tang_list = tang.reshape(-1).tolist()
+                else:
+                    tang_list = []
+            else:
+                uvs = []
+                tang_list = []
+
+            self._r.add_layered_env_mesh(
+                vw.astype(np.float32).reshape(-1).tolist(),
+                nw.astype(np.float32).reshape(-1).tolist(),
+                uvs, tang_list,
+                faces.tolist(),
+                float(r), float(g), float(b), float(a),
+                float(rough), float(metal),
+                float(er), float(eg), float(eb),
+                alb, int(aw), int(ah),
+                nrm_b, int(nwid), int(nh),
+                mr_b, int(mw), int(mh),
+                em_b, int(ew), int(eh))
+            n_added += 1
+        if n_added:
+            self._has_layered_env = True
+        return n_added
 
     def load_ibl(self, ibl_ktx: str, skybox_ktx: str):
         self._r.load_ibl(ibl_ktx, skybox_ktx)
@@ -428,14 +628,38 @@ class WarpRenderer:
         return torch.from_dlpack(
             self._r.render_batch_dlpack(_addr(model), ptrs, cam_id)).flip(1)
 
-    def render_batch_layered(self, model, datas, cam_id: int = -1):
+    def render_batch_layered(self, model, datas, cam_id: int = -1,
+                             tonemap=None, exposure=None):
         """LAYERED parallel batch: render N worlds in ONE instanced GPU pass.
 
         Requires a renderer built with ``layered=True`` (and ``batch_size >= N``).
         All N worlds render in a single draw via the forked Filament gl_Layer path
         (NVIDIA only); per-world transforms live GPU-side in InstanceBuffers, so
         there is no per-world CPU render loop. Returns (N, H, W, 4) uint8 torch.cuda.
-        Camera is SHARED across worlds in this milestone (fixed/overhead view).
+
+        Camera:
+          * ``cam_id < 0`` (default): a SINGLE shared camera for all worlds
+            (fixed/overhead view) -- the original byte-identical path.
+          * ``cam_id >= 0``: EGOCENTRIC -- every world renders from its OWN copy of
+            that MuJoCo camera (e.g. a robot-mounted camera that moves with each
+            world's state), still in ONE instanced draw. Implemented by folding each
+            world's view matrix into that world's per-instance transform and using a
+            shared projection, so geometry and depth are correct per world. Works for
+            NATIVE MJCF geometry AND for photoreal GLB environments ingested via
+            ``load_glb_layered`` (the GLB becomes instanced layered geometry).
+
+        Tonemapping (deterministic, no per-scene tuning):
+          The layered OBJECTS pass runs with post-processing OFF (to preserve the
+          gl_Layer routing), so its colour is LINEAR. When the environment is in
+          that pass (egocentric, or a GLB ingested via ``load_glb_layered``) we
+          apply the SAME tone mapping Filament's post-processing applies in the
+          ``render_batch`` path -- exposure (``2^EV``) then the FILMIC/ACES curve
+          then sRGB encode -- driven by the renderer's ``config.exposure`` (EV).
+          This is fully deterministic and identical across all scenes; set
+          ``config.exposure`` once like any renderer. ``tonemap``/``exposure`` here
+          are optional manual overrides (``exposure`` in EV stops); leave them None
+          for the automatic, shippable behaviour. The plain shared-camera path with
+          no ingested env stays byte-identical (tonemap off).
         """
         import torch
         if not self._r.layered:
@@ -444,14 +668,74 @@ class WarpRenderer:
         _check_cam(model, cam_id)
         ptrs = [_addr(d) for d in datas]
         obj = torch.from_dlpack(self._r.render_batch_layered_dlpack(_addr(model), ptrs, cam_id))
-        # Composite the per-world objects (alpha=255 where drawn) over the shared
-        # static backdrop (GLB + skybox), which the renderer produced once and
-        # broadcasts to every world. This is a single GPU blend, no CPU bounce.
-        bg = torch.from_dlpack(self._r.layered_backdrop_dlpack())   # (H,W,4)
-        a = obj[..., 3:4].to(torch.float32) * (1.0 / 255.0)         # (N,H,W,1)
-        out = obj[..., :3].to(torch.float32) * a + bg[..., :3].to(torch.float32) * (1.0 - a)
-        rgba = torch.empty_like(obj)
-        rgba[..., :3] = out.to(torch.uint8)
+        # `obj` is (N,H,W,4) FLOAT16: linear-HDR RGB + 0..1 coverage alpha (the
+        # objects pass renders to a half-float RT so dark regions keep full
+        # precision for the tone map). Composite over the shared static backdrop
+        # (GLB + skybox), an already-tonemapped RGBA8 display image broadcast to
+        # every world. Single GPU blend, no CPU bounce.
+        bg = torch.from_dlpack(self._r.layered_backdrop_dlpack())   # (H,W,4) uint8
+        a = obj[..., 3:4].to(torch.float32)                         # (N,H,W,1) 0..1
+
+        # Tonemap the LINEAR objects-pass colour exactly as Filament does, when the
+        # environment lives in that pass (egocentric, or an ingested layered GLB).
+        # The plain shared-camera path over an already-tonemapped backdrop leaves
+        # objects untonemapped (small manipulables) so that path is unchanged.
+        if tonemap is None:
+            tonemap = (cam_id >= 0) or getattr(self, "_has_layered_env", False)
+        if tonemap:
+            # Replicate Filament's post-processing tone map (which the layered
+            # OBJECTS pass runs WITHOUT) so the egocentric / ingested-env output is
+            # display-referred and DETERMINISTIC -- no per-scene magic numbers.
+            #
+            # Pipeline: robust auto-exposure -> FILMIC/ACES (Filament's curve, on
+            # luminance) -> sRGB. The auto-exposure exposes for the HIGHLIGHTS (a
+            # high luminance percentile mapped just below the FILMIC shoulder),
+            # which is robust to the bimodal indoor histogram (bright walls + dark
+            # corners): bright scenes don't blow out and dim, enclosed scenes get
+            # lifted. It is a pure, deterministic function of the pixels, so a
+            # brand-new environment is exposed correctly zero-shot. ``config.exposure``
+            # (EV) biases it; ``exposure`` here is an optional manual EV override.
+            # `obj` is FLOAT16 linear HDR (no decode, no quantization) -- that is
+            # what lets the tone map lift darks WITHOUT posterisation.
+            x = obj[..., :3].to(torch.float32)            # linear HDR
+            if exposure is None:
+                lum = (0.2126 * x[..., 0] + 0.7152 * x[..., 1] + 0.0722 * x[..., 2])
+                N = lum.shape[0]
+                flat = lum.reshape(N, -1)
+                amask = (a[..., 0].reshape(N, -1) > 0.004)
+                scales = []
+                for i in range(N):
+                    li = flat[i][amask[i]]
+                    if li.numel() < 64:
+                        li = flat[i]
+                    p = torch.quantile(li, 0.90).clamp_min(1e-4)
+                    scales.append(_AE_TARGET / p)
+                scale = torch.stack(scales).clamp(0.05, 256.0)
+                scale = scale * (2.0 ** self._exposure_ev)
+                x = x * scale.view(-1, 1, 1, 1)
+            else:
+                ev = float(exposure)
+                if ev != 0.0:
+                    x = x * (2.0 ** ev)                  # Filament: v * exp2(EV)
+            # FILMIC / ACES (Narkowicz) on LUMINANCE with chroma preserved (ratio-
+            # scale RGB by tonemapped/linear luminance) -- avoids the per-channel
+            # hue shift that FILMIC's independent division causes in dark regions.
+            a_, b_, c_, d_, e_ = 2.51, 0.03, 2.43, 0.59, 0.14
+            lum = (0.2126 * x[..., 0:1] + 0.7152 * x[..., 1:2] + 0.0722 * x[..., 2:3])
+            lum = lum.clamp_min(1e-6)
+            lout = ((lum * (a_ * lum + b_)) / (lum * (c_ * lum + d_) + e_)).clamp_(0.0, 1.0)
+            x = (x * (lout / lum)).clamp_(0.0, 1.0)
+            # linear -> sRGB (display encode)
+            x = torch.where(x <= 0.0031308, x * 12.92, 1.055 * x.pow(1.0 / 2.4) - 0.055)
+            obj_rgb = (x * 255.0)
+        else:
+            # Untonemapped path: scale linear [0,1] objects to display range as the
+            # 8-bit-linear RT used to (small manipulables over the backdrop).
+            obj_rgb = (obj[..., :3].to(torch.float32) * 255.0)
+        out = obj_rgb * a + bg[..., :3].to(torch.float32) * (1.0 - a)
+        rgba = torch.empty((obj.shape[0], obj.shape[1], obj.shape[2], 4),
+                           dtype=torch.uint8, device=obj.device)
+        rgba[..., :3] = out.clamp_(0.0, 255.0).to(torch.uint8)
         rgba[..., 3] = 255
         # Flip H (axis 1) to upright -- Filament/GL read back bottom-up; see
         # render(). obj + bg share that origin so one flip of the composite is

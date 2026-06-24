@@ -191,6 +191,81 @@ filament::MaterialInstance* MaterialManager::create_mujoco_textured_instance(
         instance->setParameter("cubeMap", useCube ? cube : dummy_cube(), sampler);
     setB("useCube", useCube);
 
+    // The layered textured material also declares normal / MR / emissive samplers.
+    // The plain MuJoCo textured path doesn't use them, but Filament requires every
+    // declared sampler to be bound -> bind dummies and gate them OFF.
+    if (mat->hasParameter("normalMap"))
+        instance->setParameter("normalMap", dummy_normal(), sampler);
+    if (mat->hasParameter("mrMap"))
+        instance->setParameter("mrMap", dummy_white_lin(), sampler);
+    if (mat->hasParameter("emissiveMap"))
+        instance->setParameter("emissiveMap", dummy_white_lin(), sampler);
+    setB("useNormal", false);
+    setB("useMR", false);
+    setB("useEmissiveMap", false);
+
+    instances_.push_back(instance);
+    return instance;
+}
+
+filament::MaterialInstance* MaterialManager::create_env_textured_instance(
+    float r, float g, float b, float a,
+    float roughness, float metallic, float reflectance,
+    float emissive_r, float emissive_g, float emissive_b,
+    filament::Texture* albedo_2d, filament::Texture* normal_2d,
+    filament::Texture* mr_2d, filament::Texture* emissive_2d)
+{
+    // No textured material available -> degrade to a flat PBR instance.
+    if (!textured_material_) {
+        return create_pbr_instance(r, g, b, a, roughness, metallic, reflectance, 0.0f);
+    }
+    auto* instance = textured_material_->createInstance();
+    filament::Material* mat = textured_material_;
+    auto setF  = [&](const char* k, float v) {
+        if (mat->hasParameter(k)) instance->setParameter(k, v); };
+    auto setF2 = [&](const char* k, filament::math::float2 v) {
+        if (mat->hasParameter(k)) instance->setParameter(k, v); };
+    auto setF3 = [&](const char* k, filament::math::float3 v) {
+        if (mat->hasParameter(k)) instance->setParameter(k, v); };
+    auto setF4 = [&](const char* k, filament::math::float4 v) {
+        if (mat->hasParameter(k)) instance->setParameter(k, v); };
+    auto setB  = [&](const char* k, bool v) {
+        if (mat->hasParameter(k)) instance->setParameter(k, v); };
+
+    setF4("baseColor", filament::math::float4{r, g, b, a});
+    setF("roughness", roughness);
+    setF("metallic", metallic);
+    setF("reflectance", reflectance);
+    setF3("emissive", filament::math::float3{emissive_r, emissive_g, emissive_b});
+    setF2("uvscale", filament::math::float2{1.0f, 1.0f});
+
+    filament::TextureSampler sampler(
+        filament::TextureSampler::MinFilter::LINEAR_MIPMAP_LINEAR,
+        filament::TextureSampler::MagFilter::LINEAR,
+        filament::TextureSampler::WrapMode::REPEAT);
+
+    const bool use2d = (albedo_2d &&
+        albedo_2d->getTarget() == filament::Texture::Sampler::SAMPLER_2D);
+    const bool useNormal = (normal_2d != nullptr);
+    const bool useMR = (mr_2d != nullptr);
+    const bool useEmissive = (emissive_2d != nullptr);
+
+    if (mat->hasParameter("albedoMap"))
+        instance->setParameter("albedoMap", use2d ? albedo_2d : dummy_2d(), sampler);
+    setB("useAlbedo", use2d);
+    if (mat->hasParameter("cubeMap"))
+        instance->setParameter("cubeMap", dummy_cube(), sampler);
+    setB("useCube", false);
+    if (mat->hasParameter("normalMap"))
+        instance->setParameter("normalMap", useNormal ? normal_2d : dummy_normal(), sampler);
+    setB("useNormal", useNormal);
+    if (mat->hasParameter("mrMap"))
+        instance->setParameter("mrMap", useMR ? mr_2d : dummy_white_lin(), sampler);
+    setB("useMR", useMR);
+    if (mat->hasParameter("emissiveMap"))
+        instance->setParameter("emissiveMap", useEmissive ? emissive_2d : dummy_white_lin(), sampler);
+    setB("useEmissiveMap", useEmissive);
+
     instances_.push_back(instance);
     return instance;
 }
@@ -209,6 +284,40 @@ filament::Texture* MaterialManager::dummy_2d() {
         [](void* b, size_t, void*) { delete[] static_cast<uint8_t*>(b); });
     dummy_2d_->setImage(*engine_, 0, std::move(pb));
     return dummy_2d_;
+}
+
+filament::Texture* MaterialManager::dummy_normal() {
+    if (dummy_normal_) return dummy_normal_;
+    // Flat tangent-space normal (0,0,1) encoded -> (128,128,255). LINEAR data.
+    const uint8_t flat[4] = {128, 128, 255, 255};
+    dummy_normal_ = filament::Texture::Builder()
+        .width(1).height(1).levels(1)
+        .format(filament::Texture::InternalFormat::RGBA8)
+        .sampler(filament::Texture::Sampler::SAMPLER_2D)
+        .build(*engine_);
+    auto* buf = new uint8_t[4]; std::memcpy(buf, flat, 4);
+    filament::Texture::PixelBufferDescriptor pb(
+        buf, 4, filament::Texture::Format::RGBA, filament::Texture::Type::UBYTE,
+        [](void* b, size_t, void*) { delete[] static_cast<uint8_t*>(b); });
+    dummy_normal_->setImage(*engine_, 0, std::move(pb));
+    return dummy_normal_;
+}
+
+filament::Texture* MaterialManager::dummy_white_lin() {
+    if (dummy_white_lin_) return dummy_white_lin_;
+    // White LINEAR (unused MR/emissive map: roughness*1, metallic*1, emissive*1).
+    const uint8_t white[4] = {255, 255, 255, 255};
+    dummy_white_lin_ = filament::Texture::Builder()
+        .width(1).height(1).levels(1)
+        .format(filament::Texture::InternalFormat::RGBA8)
+        .sampler(filament::Texture::Sampler::SAMPLER_2D)
+        .build(*engine_);
+    auto* buf = new uint8_t[4]; std::memcpy(buf, white, 4);
+    filament::Texture::PixelBufferDescriptor pb(
+        buf, 4, filament::Texture::Format::RGBA, filament::Texture::Type::UBYTE,
+        [](void* b, size_t, void*) { delete[] static_cast<uint8_t*>(b); });
+    dummy_white_lin_->setImage(*engine_, 0, std::move(pb));
+    return dummy_white_lin_;
 }
 
 filament::Texture* MaterialManager::dummy_cube() {
@@ -230,7 +339,7 @@ filament::Texture* MaterialManager::dummy_cube() {
 }
 
 filament::Texture* MaterialManager::get_or_create_texture_2d(
-    int key, int width, int height, int nchannel, const uint8_t* data)
+    int key, int width, int height, int nchannel, const uint8_t* data, bool srgb)
 {
     if (key >= 0) {
         auto it = texture_cache_.find(key);
@@ -261,7 +370,8 @@ filament::Texture* MaterialManager::get_or_create_texture_2d(
         .width(static_cast<uint32_t>(width))
         .height(static_cast<uint32_t>(height))
         .levels(0xff)  // full mip chain
-        .format(filament::Texture::InternalFormat::SRGB8_A8)
+        .format(srgb ? filament::Texture::InternalFormat::SRGB8_A8
+                     : filament::Texture::InternalFormat::RGBA8)
         .sampler(filament::Texture::Sampler::SAMPLER_2D)
         .build(*engine_);
 
@@ -387,6 +497,8 @@ void MaterialManager::clear() {
     texture_cache_.clear();
     if (dummy_2d_) { engine_->destroy(dummy_2d_); dummy_2d_ = nullptr; }
     if (dummy_cube_) { engine_->destroy(dummy_cube_); dummy_cube_ = nullptr; }
+    if (dummy_normal_) { engine_->destroy(dummy_normal_); dummy_normal_ = nullptr; }
+    if (dummy_white_lin_) { engine_->destroy(dummy_white_lin_); dummy_white_lin_ = nullptr; }
 
     for (auto& [name, mat] : materials_) {
         engine_->destroy(mat);

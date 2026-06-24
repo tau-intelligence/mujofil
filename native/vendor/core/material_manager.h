@@ -48,10 +48,26 @@ public:
         float uvscale_x, float uvscale_y,
         filament::Texture* albedo_2d, filament::Texture* cube);
 
+    /// Create a layered-env textured PBR instance with the full glTF map set
+    /// (albedo + normal + metallic-roughness + emissive). Any map may be null;
+    /// the corresponding use* flag is set automatically. Used by the GLB-ingest
+    /// (load_glb_layered) path so a photoreal environment keeps its surface detail
+    /// in the instanced layered draw.
+    filament::MaterialInstance* create_env_textured_instance(
+        float r, float g, float b, float a,
+        float roughness, float metallic, float reflectance,
+        float emissive_r, float emissive_g, float emissive_b,
+        filament::Texture* albedo_2d,
+        filament::Texture* normal_2d,
+        filament::Texture* mr_2d,
+        filament::Texture* emissive_2d);
+
     /// Get (or create + cache) a Filament 2D texture from MuJoCo pixel data.
-    /// key is the MuJoCo texture id (for caching). nchannel is 1/3/4.
+    /// key is the MuJoCo texture id (for caching). nchannel is 1/3/4. srgb=false
+    /// uploads a LINEAR texture (for data maps: normal / metallic-roughness).
     filament::Texture* get_or_create_texture_2d(
-        int key, int width, int height, int nchannel, const uint8_t* data);
+        int key, int width, int height, int nchannel, const uint8_t* data,
+        bool srgb = true);
 
     /// Get (or create + cache) a Filament cubemap from MuJoCo cube texture data
     /// (6 square faces stacked vertically, height == 6*width).
@@ -77,6 +93,8 @@ private:
     filament::Material* load_named_material(const std::string& filename);
     filament::Texture* dummy_2d();
     filament::Texture* dummy_cube();
+    filament::Texture* dummy_normal();   // 1x1 flat tangent normal (0.5,0.5,1) linear
+    filament::Texture* dummy_white_lin();// 1x1 white LINEAR (unused MR/emissive map)
 
     filament::Engine* engine_;
     filament::Material* default_material_ = nullptr;
@@ -87,6 +105,8 @@ private:
     std::unordered_map<int, filament::Texture*> texture_cache_;
     filament::Texture* dummy_2d_ = nullptr;     // 1x1 white, for unused sampler2d
     filament::Texture* dummy_cube_ = nullptr;   // 1x1 white cube, for unused samplerCube
+    filament::Texture* dummy_normal_ = nullptr; // 1x1 flat normal, linear
+    filament::Texture* dummy_white_lin_ = nullptr; // 1x1 white, linear
 };
 
 } // namespace vf_mujoco

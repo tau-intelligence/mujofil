@@ -11,6 +11,7 @@
 #include <filament/TransformManager.h>
 #include <filament/VertexBuffer.h>
 #include <filament/IndexBuffer.h>
+#include <filament/Camera.h>
 #include <utils/EntityManager.h>
 #include <math/mat4.h>
 #include <math/vec3.h>
@@ -35,6 +36,12 @@ SceneBridge::SceneBridge(Renderer& renderer)
 
 SceneBridge::~SceneBridge() {
     clear();
+    // Free the throwaway camera used for per-world (egocentric) layered matrices.
+    if (cam_scratch_camera_ != nullptr && renderer_.engine() != nullptr) {
+        renderer_.engine()->destroyCameraComponent(cam_scratch_entity_);
+        utils::EntityManager::get().destroy(cam_scratch_entity_);
+        cam_scratch_camera_ = nullptr;
+    }
 }
 
 void SceneBridge::load_model(const mjModel* model) {
@@ -558,12 +565,17 @@ GeomRenderable SceneBridge::create_renderable(
     filament::MaterialInstance* mat_inst,
     int geom_id,
     const std::vector<float>& uvs,
-    bool cast_shadows)
+    bool cast_shadows,
+    const std::vector<float>& tangents4)
 {
     auto* engine = renderer_.engine();
 
     uint32_t vertex_count = static_cast<uint32_t>(vertices.size() / 6);
     const bool has_uv = !uvs.empty();
+    // UV-aligned tangents (4 floats/vertex: T.xyz + handedness) are supplied for
+    // normal-mapped meshes so the TBN frame matches the normal map's UV space;
+    // otherwise a tangent basis is derived from the normal (Frisvad, arbitrary).
+    const bool has_tan = (tangents4.size() == (size_t)vertex_count * 4);
     uint32_t index_count = static_cast<uint32_t>(indices.size());
 
     // Vertex buffer: position (buffer 0) + tangents as SHORT4 (buffer 1)
@@ -601,9 +613,29 @@ GeomRenderable SceneBridge::create_renderable(
         float len = std::sqrt(nx*nx + ny*ny + nz*nz);
         if (len > 0.0001f) { nx/=len; ny/=len; nz/=len; }
         else { nx=0; ny=0; nz=1; }
-        // Compute tangent frame from normal using Frisvad's method
+        // Compute tangent frame.
         float tx, ty, tz, bx, by, bz;
-        if (nz < -0.9999f) {
+        if (has_tan) {
+            // UV-aligned tangent supplied (T.xyz + handedness w). Gram-Schmidt
+            // orthonormalize T against N, then B = w * (N x T) so the TBN frame
+            // matches the normal map's UV space.
+            tx = tangents4[i*4+0]; ty = tangents4[i*4+1]; tz = tangents4[i*4+2];
+            float w = tangents4[i*4+3];
+            float d = tx*nx + ty*ny + tz*nz;
+            tx -= d*nx; ty -= d*ny; tz -= d*nz;
+            float tl = std::sqrt(tx*tx + ty*ty + tz*tz);
+            if (tl > 1e-6f) { tx/=tl; ty/=tl; tz/=tl; }
+            else {
+                // degenerate tangent -> fall back to an arbitrary basis
+                if (nz < -0.9999f) { tx=0; ty=-1; tz=0; }
+                else { float a=1.0f/(1.0f+nz); tx=1.0f-nx*nx*a; ty=-nx*ny*a; tz=-nx; }
+            }
+            // B = w * (N x T)
+            bx = (ny*tz - nz*ty) * w;
+            by = (nz*tx - nx*tz) * w;
+            bz = (nx*ty - ny*tx) * w;
+        } else if (nz < -0.9999f) {
+            // Frisvad's method (arbitrary tangent perpendicular to the normal)
             tx = 0; ty = -1; tz = 0;
             bx = -1; by = 0; bz = 0;
         } else {
@@ -776,15 +808,38 @@ void SceneBridge::sync_transforms_layered(const mjModel* model,
     const uint32_t n = (uint32_t)std::min<size_t>(datas.size(), (size_t)n_worlds_);
     if (world_scratch_.size() < n_worlds_) world_scratch_.resize(n_worlds_);
     for (auto& gr : geom_renderables_) {
-        if (gr.mj_geom_id < 0 || gr.instance_buffer == nullptr) continue;
+        if (gr.instance_buffer == nullptr) continue;
+
+        // STATIC env mesh (ingested GLB environment): same FIXED world pose in
+        // every world, view-folded per world in egocentric mode. This is what lets
+        // a photoreal GLB environment ride the single instanced draw with per-world
+        // cameras (each layer = one world's egocentric view of the environment).
+        if (gr.static_instanced) {
+            for (uint32_t w = 0; w < n; ++w) {
+                filament::math::mat4f world = gr.base_xform;
+                if (egocentric_ && w < egocentric_view_.size())
+                    world = egocentric_view_[w] * world;
+                world_scratch_[w] = world;
+            }
+            gr.instance_buffer->setLocalTransforms(world_scratch_.data(), n);
+            continue;
+        }
+
+        if (gr.mj_geom_id < 0) continue;
         for (uint32_t w = 0; w < n; ++w) {
             const double* pos = datas[w]->geom_xpos + gr.mj_geom_id * 3;
             const double* mat = datas[w]->geom_xmat + gr.mj_geom_id * 9;
-            world_scratch_[w] = filament::math::mat4f(
+            filament::math::mat4f world(
                 filament::math::float4{(float)mat[0], (float)mat[3], (float)mat[6], 0.0f},
                 filament::math::float4{(float)mat[1], (float)mat[4], (float)mat[7], 0.0f},
                 filament::math::float4{(float)mat[2], (float)mat[5], (float)mat[8], 0.0f},
                 filament::math::float4{(float)pos[0], (float)pos[1], (float)pos[2], 1.0f});
+            // EGOCENTRIC: fold this world's view matrix into the instance transform
+            // so the shared projection-only camera renders world w from camera w.
+            // localTransform_w = V_w * geomPose_w  -> position = P * V_w * pose * v.
+            if (egocentric_ && w < egocentric_view_.size())
+                world = egocentric_view_[w] * world;
+            world_scratch_[w] = world;
         }
         gr.instance_buffer->setLocalTransforms(world_scratch_.data(), n);
     }
@@ -821,6 +876,75 @@ void SceneBridge::sync_camera(const mjModel* model, const mjData* data, int cam_
     float aspect = static_cast<float>(renderer_.width()) /
                    static_cast<float>(renderer_.height());
     camera->setProjection(fovy, aspect, 0.05f, 200.0f);
+}
+
+void SceneBridge::sync_cameras_layered(const mjModel* model,
+                                       const std::vector<const mjData*>& datas,
+                                       int cam_id) {
+    using filament::math::float3;
+    using filament::math::mat4;
+    using filament::math::mat4f;
+
+    // cam_id < 0: egocentric OFF -> shared-camera layered path (byte-identical).
+    if (cam_id < 0 || cam_id >= model->ncam) {
+        if (egocentric_ && have_saved_cam_) {
+            // Restore the pre-egocentric bound camera so a shared render after an
+            // egocentric one is correct.
+            auto* cam = renderer_.camera();
+            cam->setCustomProjection(saved_cam_proj_, saved_cam_near_, saved_cam_far_);
+            cam->setModelMatrix(saved_cam_model_);
+            have_saved_cam_ = false;
+        }
+        egocentric_ = false;
+        return;
+    }
+
+    const uint32_t n = (uint32_t)std::min<size_t>(datas.size(), (size_t)n_worlds_);
+    if (n == 0) return;
+    if (egocentric_view_.size() < n_worlds_) egocentric_view_.resize(n_worlds_);
+
+    // Throwaway camera used to build each world's view matrix V_w and the shared
+    // projection P.
+    if (cam_scratch_camera_ == nullptr) {
+        cam_scratch_entity_ = utils::EntityManager::get().create();
+        cam_scratch_camera_ = renderer_.engine()->createCamera(cam_scratch_entity_);
+    }
+
+    const float aspect = static_cast<float>(renderer_.width()) /
+                         static_cast<float>(renderer_.height());
+    const float fovy = static_cast<float>(model->cam_fovy[cam_id]);
+
+    // On the shared->egocentric transition, save the current bound camera so it can
+    // be restored later (egocentric binds a projection-only camera below).
+    if (!egocentric_) {
+        auto* cam = renderer_.camera();
+        saved_cam_model_ = cam->getModelMatrix();
+        saved_cam_proj_  = cam->getProjectionMatrix();
+        saved_cam_near_  = cam->getNear();
+        saved_cam_far_   = cam->getCullingFar();
+        have_saved_cam_  = true;
+    }
+    egocentric_ = true;
+
+    // Per-world view matrix V_w = world->view for that world's camera pose. Folded
+    // into the InstanceBuffer transform in sync_transforms_layered.
+    for (uint32_t w = 0; w < n; ++w) {
+        const double* pos = datas[w]->cam_xpos + (size_t)cam_id * 3;
+        const double* mat = datas[w]->cam_xmat + (size_t)cam_id * 9;
+        float3 eye{(float)pos[0], (float)pos[1], (float)pos[2]};
+        float3 forward{-(float)mat[2], -(float)mat[5], -(float)mat[8]};
+        float3 up{(float)mat[1], (float)mat[4], (float)mat[7]};
+        cam_scratch_camera_->lookAt(eye, eye + forward, up);
+        egocentric_view_[w] = mat4f(cam_scratch_camera_->getViewMatrix());
+    }
+
+    // Bind a SHARED projection-only camera (identity view at the origin) so
+    // getClipFromWorldMatrix() == P. Combined with the V_w-folded transforms this
+    // yields position = P * V_w * geomPose_w * vert for each world.
+    auto* cam = renderer_.camera();
+    cam->lookAt(float3{0.0f, 0.0f, 0.0f}, float3{0.0f, 0.0f, -1.0f},
+                float3{0.0f, 1.0f, 0.0f});
+    cam->setProjection(fovy, aspect, 0.05, 200.0);
 }
 
 void SceneBridge::render_batch_rgb(const mjModel* model,
@@ -1058,6 +1182,79 @@ void SceneBridge::load_glb_xform(const std::string& path, const float* mat4x4) {
     
     auto* scene = renderer_.scene();
     scene->addEntities(asset->getEntities(), asset->getEntityCount());
+}
+
+void SceneBridge::add_layered_env_mesh(
+    const float* positions, const float* normals, int vert_count,
+    const float* uvs, const float* tangents4,
+    const uint32_t* indices, int index_count,
+    float r, float g, float b, float a,
+    float roughness, float metallic,
+    float emissive_r, float emissive_g, float emissive_b,
+    const uint8_t* albedo_rgba, int albedo_w, int albedo_h,
+    const uint8_t* normal_rgba, int normal_w, int normal_h,
+    const uint8_t* mr_rgba, int mr_w, int mr_h,
+    const uint8_t* emissive_rgba, int emissive_w, int emissive_h)
+{
+    if (vert_count <= 0 || index_count <= 0) return;
+
+    // Interleave position + normal into the 6-float/vertex layout create_renderable
+    // expects.
+    std::vector<float> verts((size_t)vert_count * 6);
+    for (int i = 0; i < vert_count; ++i) {
+        verts[i*6+0] = positions[i*3+0];
+        verts[i*6+1] = positions[i*3+1];
+        verts[i*6+2] = positions[i*3+2];
+        verts[i*6+3] = normals ? normals[i*3+0] : 0.0f;
+        verts[i*6+4] = normals ? normals[i*3+1] : 0.0f;
+        verts[i*6+5] = normals ? normals[i*3+2] : 1.0f;
+    }
+    std::vector<uint32_t> idx(indices, indices + index_count);
+    std::vector<float> uv;
+    if (uvs) uv.assign(uvs, uvs + (size_t)vert_count * 2);
+    std::vector<float> tan;
+    if (tangents4) tan.assign(tangents4, tangents4 + (size_t)vert_count * 4);
+
+    // Upload the glTF map set. Albedo + emissive are sRGB colour; normal + MR are
+    // LINEAR data. Each gets a unique decreasing cache key.
+    filament::Texture* albedo_tex = nullptr;
+    filament::Texture* normal_tex = nullptr;
+    filament::Texture* mr_tex = nullptr;
+    filament::Texture* emissive_tex = nullptr;
+    if (albedo_rgba && albedo_w > 0 && albedo_h > 0 && !uv.empty())
+        albedo_tex = material_manager_->get_or_create_texture_2d(
+            env_tex_key_--, albedo_w, albedo_h, 4, albedo_rgba, /*srgb*/true);
+    if (normal_rgba && normal_w > 0 && normal_h > 0 && !uv.empty())
+        normal_tex = material_manager_->get_or_create_texture_2d(
+            env_tex_key_--, normal_w, normal_h, 4, normal_rgba, /*srgb*/false);
+    if (mr_rgba && mr_w > 0 && mr_h > 0 && !uv.empty())
+        mr_tex = material_manager_->get_or_create_texture_2d(
+            env_tex_key_--, mr_w, mr_h, 4, mr_rgba, /*srgb*/false);
+    if (emissive_rgba && emissive_w > 0 && emissive_h > 0 && !uv.empty())
+        emissive_tex = material_manager_->get_or_create_texture_2d(
+            env_tex_key_--, emissive_w, emissive_h, 4, emissive_rgba, /*srgb*/true);
+
+    filament::MaterialInstance* mat_inst = nullptr;
+    if (albedo_tex || normal_tex || mr_tex || emissive_tex) {
+        mat_inst = material_manager_->create_env_textured_instance(
+            r, g, b, a, roughness, metallic, 0.5f,
+            emissive_r, emissive_g, emissive_b,
+            albedo_tex, normal_tex, mr_tex, emissive_tex);
+    } else {
+        mat_inst = material_manager_->create_pbr_instance(
+            r, g, b, a, roughness, metallic, 0.5f, 0.0f);
+    }
+
+    // Build an instanced renderable (create_renderable adds the InstanceBuffer when
+    // layered_ && n_worlds_>1). geom_id = -1 (not MuJoCo-driven); we mark it
+    // static_instanced so sync_transforms_layered gives it a FIXED world pose,
+    // view-folded per world in egocentric mode. Pass UV-aligned tangents so the
+    // normal map's TBN frame is correct.
+    GeomRenderable gr = create_renderable(verts, idx, mat_inst, /*geom_id*/-1, uv,
+                                          /*cast_shadows*/true, tan);
+    gr.static_instanced = true;
+    gr.base_xform = filament::math::mat4f();   // verts already in world space
+    geom_renderables_.push_back(std::move(gr));
 }
 
 void SceneBridge::load_ibl(const std::string& ibl_path, const std::string& skybox_path,

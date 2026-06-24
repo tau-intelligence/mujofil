@@ -80,6 +80,35 @@ public:
         if (m.size() != 16) throw std::runtime_error("load_glb_xform needs 16 floats (column-major 4x4)");
         bridge_->load_glb_xform(p, m.data());
     }
+    // Ingest one GLB-environment mesh (already in WORLD space) as an instanced
+    // layered renderable so a photoreal environment rides the single parallel draw
+    // AND per-world egocentric cameras. Maps passed as raw RGBA bytes (or empty);
+    // tangents (4/vertex, UV-aligned) enable correct normal mapping.
+    void add_layered_env_mesh(
+            const std::vector<float>& positions, const std::vector<float>& normals,
+            const std::vector<float>& uvs, const std::vector<float>& tangents4,
+            const std::vector<uint32_t>& indices,
+            float r, float g, float b, float a, float roughness, float metallic,
+            float em_r, float em_g, float em_b,
+            const std::string& albedo_rgba, int albedo_w, int albedo_h,
+            const std::string& normal_rgba, int normal_w, int normal_h,
+            const std::string& mr_rgba, int mr_w, int mr_h,
+            const std::string& emissive_rgba, int emissive_w, int emissive_h) {
+        const int vc = (int)(positions.size() / 3);
+        const float* nrm = (normals.size() == positions.size()) ? normals.data() : nullptr;
+        const float* uv = (uvs.size() == (size_t)vc * 2) ? uvs.data() : nullptr;
+        const float* tan = (tangents4.size() == (size_t)vc * 4) ? tangents4.data() : nullptr;
+        auto bytes = [](const std::string& s) {
+            return s.empty() ? nullptr : reinterpret_cast<const uint8_t*>(s.data()); };
+        bridge_->add_layered_env_mesh(positions.data(), nrm, vc, uv, tan,
+                                      indices.data(), (int)indices.size(),
+                                      r, g, b, a, roughness, metallic,
+                                      em_r, em_g, em_b,
+                                      bytes(albedo_rgba), albedo_w, albedo_h,
+                                      bytes(normal_rgba), normal_w, normal_h,
+                                      bytes(mr_rgba), mr_w, mr_h,
+                                      bytes(emissive_rgba), emissive_w, emissive_h);
+    }
     void load_ibl(const std::string& ibl, const std::string& sky) { bridge_->load_ibl(ibl, sky); }
     void set_ambient_intensity(float i) { bridge_->set_ambient_intensity(i); }
     void clear_dynamic_lights() { bridge_->clear_dynamic_lights(); }
@@ -150,19 +179,28 @@ public:
             // For N larger than the per-pass cap, render in chunks: each chunk
             // fills the InstanceBuffer with its worlds and writes its slice of the
             // (N,H,W,4) output. Per-world transforms live GPU-side (InstanceBuffer).
+            //
+            // EGOCENTRIC (cam >= 0): each world renders from its OWN camera. This is
+            // done by VIEW-FOLDING -- sync_cameras_layered binds a shared projection-
+            // only camera and computes each world's view matrix V_w, which
+            // sync_transforms_layered folds into that world's instance transform
+            // (localTransform_w = V_w * geomPose_w). So position = P * V_w * pose * v
+            // renders world w from camera w, using only proven per-instance transform
+            // + frame-uniform projection (no per-instance clip matrix). cam < 0 keeps
+            // the shared-camera path byte-identical.
             renderer_->render_layered_backdrop();
             const uint32_t cap = renderer_->layered_max_per_pass();
             for (uint32_t start = 0; start < n; start += cap) {
                 const uint32_t cn = std::min(cap, n - start);
                 std::vector<const mjData*> chunk(cn);
                 for (uint32_t i = 0; i < cn; ++i) chunk[i] = DATA(datas[start + i]);
+                bridge_->sync_cameras_layered(MODEL(model), chunk, cam);
                 bridge_->sync_transforms_layered(MODEL(model), chunk);
-                if (cam >= 0 && cn > 0) bridge_->sync_camera(MODEL(model), chunk[0], cam);
                 renderer_->render_layered_objects(start, cn);
             }
             dptr = renderer_->layered_output_ptr();
         }
-        return wrap(dptr, 4, renderer_->height(), renderer_->width(), n);
+        return wrap(dptr, 4, renderer_->height(), renderer_->width(), n, /*half*/true);
     }
 
     // The (H,W,4) static backdrop from the most recent layered render. Python
@@ -188,8 +226,9 @@ public:
 
 private:
     // Build a DLPack capsule for an externally-owned CUDA buffer. ndim is 3 (H,W,4)
-    // or 4 (N,H,W,4); pass the dims in order.
-    py::capsule wrap(void* dptr, int ndim, int64_t d0, int64_t d1, int64_t d2 = 0) {
+    // or 4 (N,H,W,4); pass the dims in order. half=true wraps RGBA16F (float16).
+    py::capsule wrap(void* dptr, int ndim, int64_t d0, int64_t d1, int64_t d2 = 0,
+                     bool half = false) {
         auto* ctx = new DLCtx();
         if (ndim == 4) { ctx->shape[0] = d2; ctx->shape[1] = d0; ctx->shape[2] = d1; ctx->shape[3] = 4; }
         else           { ctx->shape[0] = d0; ctx->shape[1] = d1; ctx->shape[2] = 4; }
@@ -200,7 +239,7 @@ private:
         t.data = dptr;
         t.device = DLDevice{kDLCUDA, renderer_->cuda_device()};
         t.ndim = ndim;
-        t.dtype = DLDataType{kDLUInt, 8, 1};
+        t.dtype = half ? DLDataType{kDLFloat, 16, 1} : DLDataType{kDLUInt, 8, 1};
         t.shape = ctx->shape;
         t.strides = nullptr;
         t.byte_offset = 0;
@@ -248,6 +287,7 @@ PYBIND11_MODULE(MUJOFIL_WARP_MODULE, m) {
         .def("set_free_camera", &WarpRenderer::set_free_camera)
         .def("load_glb", &WarpRenderer::load_glb)
         .def("load_glb_xform", &WarpRenderer::load_glb_xform)
+        .def("add_layered_env_mesh", &WarpRenderer::add_layered_env_mesh)
         .def("load_ibl", &WarpRenderer::load_ibl)
         .def("set_ambient_intensity", &WarpRenderer::set_ambient_intensity)
         .def("clear_dynamic_lights", &WarpRenderer::clear_dynamic_lights)
