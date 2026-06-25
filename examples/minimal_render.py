@@ -1,7 +1,8 @@
-"""Minimal mujofil-warp example: MJWarp GPU physics -> Filament PBR -> torch.cuda.
+"""Minimal mujofil-warp example: N MuJoCo worlds -> photoreal frames on torch.cuda.
 
-Demonstrates the quality toggles / presets so you can reproduce the
-fidelity-vs-throughput trends from ``benchmarks/`` on your own hardware.
+You only import ``mujofil_warp``. ``ParallelScene`` drives MuJoCo Warp (GPU MuJoCo)
+for the physics and this package's Filament renderer for the pixels, handing each
+batch of observations back as a zero-copy ``torch.cuda`` tensor.
 
 Run::
 
@@ -20,12 +21,10 @@ from __future__ import annotations
 import argparse
 import time
 
-import mujoco
-import mujoco_warp as mjw
-import warp as wp
 import torch
 
-from mujofil_warp import WarpRenderer, QUALITY_PRESETS
+import mujofil_warp
+from mujofil_warp import QUALITY_PRESETS
 
 SCENE = """
 <mujoco>
@@ -56,36 +55,20 @@ def main():
     ap.add_argument("--save", type=str, default="", help="save world-0 frame to this PNG")
     args = ap.parse_args()
 
-    mjm = mujoco.MjModel.from_xml_string(SCENE)
-    M = mjw.put_model(mjm)
-    d = mjw.make_data(mjm, nworld=args.n)
-    host = [mujoco.MjData(mjm) for _ in range(args.n)]
-    for h in host:
-        mujoco.mj_forward(mjm, h)
-    ngeom = mjm.ngeom
+    # One object: GPU physics (MuJoCo Warp) + photoreal rendering (Filament).
+    scene = mujofil_warp.ParallelScene(
+        SCENE, num_worlds=args.n, width=args.res, height=args.res, preset=args.preset)
 
-    # All quality toggles flow from the preset; override any individually, e.g.
-    # WarpRenderer(..., preset="high", ssao=False).
-    r = WarpRenderer(width=args.res, height=args.res, batch_size=args.n, preset=args.preset)
-    r.load_model(mjm)
+    for _ in range(5):  # warmup (the first MuJoCo Warp step JIT-compiles)
+        scene.step()
+        scene.render(camera="cam0")
 
-    def step():
-        mjw.step(M, d)
-        wp.synchronize()
-        gx = d.geom_xpos.numpy()
-        gm = d.geom_xmat.numpy().reshape(args.n, ngeom, 9)
-        for i, h in enumerate(host):
-            h.geom_xpos[:] = gx[i]
-            h.geom_xmat[:] = gm[i]
-        obs = r.render_batch(mjm, host, cam_id=0)  # (N, H, W, 4) uint8 torch.cuda
-        torch.cuda.synchronize()
-        return obs
-
-    for _ in range(5):  # warmup (first MJWarp call JIT-compiles)
-        step()
+    torch.cuda.synchronize()
     t0 = time.perf_counter()
     for _ in range(args.steps):
-        obs = step()
+        scene.step()
+        obs = scene.render(camera="cam0")   # (N, H, W, 4) uint8 torch.cuda, zero-copy
+    torch.cuda.synchronize()
     dt = time.perf_counter() - t0
 
     cam_s = args.n * args.steps / dt
@@ -96,6 +79,8 @@ def main():
         from PIL import Image
         Image.fromarray(obs[0, ..., :3].cpu().numpy()).save(args.save)
         print(f"saved world-0 frame -> {args.save}")
+
+    scene.close()
 
 
 if __name__ == "__main__":

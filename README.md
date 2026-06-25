@@ -1,16 +1,37 @@
 # mujofil-warp
 
-**Photoreal PBR rendering for GPU-resident MuJoCo (MJWarp), zero-copy to PyTorch.**
+**A GPU simulation pipeline for vision-based RL: MuJoCo Warp physics + a parallel,
+high-fidelity rasterization renderer (forked from Google Filament), zero-copy to
+PyTorch.**
 
-[MJWarp](https://github.com/google-deepmind/mujoco_warp) simulates thousands of
-parallel MuJoCo worlds entirely on the GPU, but its built-in batch renderer is a
-deliberately **low-fidelity single-hit raycaster** (flat Lambertian, no PBR / IBL
-/ reflections, and it cannot load GLB environments).
+`mujofil-warp` builds an **efficient, GPU-parallel rasterization render engine**
+(a fork of [Google Filament](https://github.com/google/filament) — PBR materials,
+image-based lighting, soft shadows, SSAO, reflections) and wires it into a complete
+simulation pipeline: it plugs
+[MuJoCo Warp](https://github.com/google-deepmind/mujoco_warp)'s **high-throughput
+GPU physics** into that renderer so you get the **best of both** — MuJoCo Warp's
+fast, massively parallel dynamics *and* fast, parallel, photoreal visual frames
+from the Filament fork — delivered **straight to PyTorch as `torch.cuda` tensors
+with no CPU round-trip** for the pixels.
 
-`mujofil-warp` pairs MJWarp's GPU-resident physics with
-[Google Filament](https://github.com/google/filament)'s **physically-based
-renderer** (PBR materials, image-based lighting, soft shadows, SSAO) and delivers
-each rendered frame **straight to PyTorch as a CUDA tensor — no CPU round-trip**.
+**What that unlocks:**
+
+- **Drop in any environment.** Pull scenes/assets from
+  [Sketchfab](https://sketchfab.com), [Poly Haven](https://polyhaven.com) and
+  similar sources (glTF / GLB / OBJ / USD) and train your robot's RL policy inside
+  them — photoreal worlds MuJoCo and MuJoCo Warp's built-in raycaster cannot even
+  load.
+- **Photoreal vision observations** (PBR, IBL, reflections) at parallel-batch
+  throughput, so the renderer keeps up with GPU physics instead of bottlenecking it.
+- **One import.** Your code only ever imports `mujofil_warp`; it drives the
+  MuJoCo Warp physics and the renderer for you.
+
+> **Positioning, honestly:** the physics is MuJoCo Warp (DeepMind + NVIDIA's GPU
+> MuJoCo) — we don't reimplement dynamics. Our work is the **parallel rasterization
+> renderer and the zero-copy GPU→PyTorch pipeline** that turns those GPU-resident
+> world states into photoreal training observations. It targets the **middle of the
+> fidelity/speed spectrum**: more realistic than a flat raycaster, far lighter than
+> ray-traced stacks like Omniverse — photoreal-enough RGB that runs on a mid-range GPU.
 
 > 📖 **Full documentation:** [docs/](docs/) — [getting started](docs/getting-started.md),
 > [API guide](docs/guide.md), [feature reference](docs/features.md),
@@ -63,8 +84,33 @@ parallel raycaster, this is a photoreal rasterizer.
 
 ## Quickstart
 
+You only import `mujofil_warp`. `ParallelScene` runs the GPU physics (MuJoCo Warp)
+and renders every world to a zero-copy `torch.cuda` tensor — no `put_model` /
+`make_data` / host-copy boilerplate:
+
 ```python
-import mujoco, mujoco_warp as mjw, warp as wp, torch
+import mujofil_warp
+
+scene = mujofil_warp.ParallelScene("scene.xml", num_worlds=32,
+                                   width=256, height=256, preset="high")
+
+for _ in range(100):
+    scene.step()                     # GPU physics (MuJoCo Warp)
+    obs = scene.render(camera=0)     # (32, 256, 256, 4) uint8 torch.cuda — zero-copy
+```
+
+Set controls or initial state through `scene.data` (the MuJoCo Warp `Data`) and
+the model through `scene.model`. See
+[examples/minimal_render.py](examples/minimal_render.py) for a runnable demo.
+
+<details>
+<summary>Lower-level API (drive the physics yourself)</summary>
+
+If you already run your own MuJoCo Warp loop, render a batch of host `MjData`
+directly with `WarpRenderer`:
+
+```python
+import mujoco, mujoco_warp as mjw, warp as wp
 from mujofil_warp import WarpRenderer
 
 mjm = mujoco.MjModel.from_xml_path("scene.xml")
@@ -83,7 +129,7 @@ for i, h in enumerate(host):
 obs = r.render_batch(mjm, host, cam_id=0)   # (32, 256, 256, 4) uint8 torch.cuda
 ```
 
-See [examples/minimal_render.py](examples/minimal_render.py) for a runnable demo.
+</details>
 
 ## Quality toggles
 

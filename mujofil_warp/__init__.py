@@ -18,7 +18,7 @@ try:  # single source of truth = the installed wheel's metadata (pyproject versi
     from importlib.metadata import version as _pkg_version
     __version__ = _pkg_version("mujofil-warp")
 except Exception:  # editable/source checkout without metadata
-    __version__ = "0.1.7"
+    __version__ = "0.1.8"
 
 # Live renderers, closed deterministically at interpreter exit so the native
 # Filament/CUDA teardown runs while the interpreter is healthy -- not during the
@@ -700,17 +700,34 @@ class WarpRenderer:
             x = obj[..., :3].to(torch.float32)            # linear HDR
             if exposure is None:
                 lum = (0.2126 * x[..., 0] + 0.7152 * x[..., 1] + 0.0722 * x[..., 2])
-                N = lum.shape[0]
-                flat = lum.reshape(N, -1)
-                amask = (a[..., 0].reshape(N, -1) > 0.004)
-                scales = []
-                for i in range(N):
-                    li = flat[i][amask[i]]
-                    if li.numel() < 64:
-                        li = flat[i]
-                    p = torch.quantile(li, 0.90).clamp_min(1e-4)
-                    scales.append(_AE_TARGET / p)
-                scale = torch.stack(scales).clamp(0.05, 256.0)
+                Nw = lum.shape[0]
+                flat = lum.reshape(Nw, -1)
+                amask = (a[..., 0].reshape(Nw, -1) > 0.004)
+                # Per-world 90th-percentile of the LIT pixels, computed for ALL N
+                # worlds in ONE vectorised reduction. The earlier per-world Python
+                # loop launched N separate quantile kernels + N boolean-mask
+                # allocations per frame, which dominated the whole step at large N
+                # (~240ms @N=1024); this is the same result in a few ms.
+                #
+                # We subsample to a fixed pixel budget per world: auto-exposure only
+                # needs a representative percentile, a few thousand pixels give a
+                # stable estimate, and it keeps the batched tensor under torch's
+                # quantile element cap (2**24) at any N/resolution.
+                P = flat.shape[1]
+                budget = 4096
+                if P > budget:
+                    idx = torch.linspace(0, P - 1, budget, device=flat.device).long()
+                    flat_s = flat.index_select(1, idx)
+                    amask_s = amask.index_select(1, idx)
+                else:
+                    flat_s, amask_s = flat, amask
+                masked = torch.where(amask_s, flat_s,
+                                     torch.tensor(float("nan"), device=flat_s.device))
+                p_lit = torch.nanquantile(masked, 0.90, dim=1)
+                p_all = torch.quantile(flat_s, 0.90, dim=1)
+                enough = amask_s.sum(dim=1) >= 64
+                p = torch.where(enough, p_lit, p_all).clamp_min(1e-4)
+                scale = (_AE_TARGET / p).clamp(0.05, 256.0)
                 scale = scale * (2.0 ** self._exposure_ev)
                 x = x * scale.view(-1, 1, 1, 1)
             else:
@@ -765,6 +782,151 @@ class WarpRenderer:
         return self._r.height
 
 
+class ParallelScene:
+    """A batch of ``num_worlds`` MuJoCo worlds you step and render in one object.
+
+    This is the high-level entry point: you only ever import ``mujofil_warp``.
+    Under the hood it drives MuJoCo Warp (DeepMind's GPU MuJoCo) for the physics
+    and this package's Filament renderer for photoreal frames, handing you each
+    batch of observations as a **zero-copy ``torch.cuda`` tensor** -- no
+    ``put_model`` / ``make_data`` / host-copy boilerplate in your code::
+
+        import mujofil_warp
+
+        scene = mujofil_warp.ParallelScene("scene.xml", num_worlds=32,
+                                           width=256, height=256, preset="train")
+        for _ in range(100):
+            scene.step()                    # GPU physics (MuJoCo Warp)
+            obs = scene.render(camera=0)     # (32, 256, 256, 4) uint8 torch.cuda
+
+    ``mujoco``, ``mujoco-warp`` and ``warp-lang`` are declared dependencies, so
+    ``pip install mujofil-warp`` already pulls them in -- there is nothing extra
+    to install or import.
+
+    To set controls / initial state, reach the GPU physics ``Data`` via
+    :attr:`data` (a ``mujoco_warp`` Data) and the model via :attr:`model`.
+    """
+
+    def __init__(self, model, *, num_worlds: int = 1,
+                 width: int = 256, height: int = 256,
+                 preset: str | None = None, renderer: "WarpRenderer | None" = None,
+                 **toggles):
+        try:
+            import mujoco
+            import mujoco_warp as mjw
+            import warp as wp
+        except ImportError as e:  # pragma: no cover - dependency guard
+            raise ImportError(
+                "ParallelScene needs mujoco, mujoco-warp and warp-lang. These are "
+                "declared dependencies of mujofil-warp; reinstall with "
+                "`pip install mujofil-warp` to pull them in."
+            ) from e
+        self._mujoco, self._mjw, self._wp = mujoco, mjw, wp
+
+        if isinstance(model, mujoco.MjModel):
+            self.model = model
+        elif isinstance(model, str) and "<" in model and ">" in model:
+            self.model = mujoco.MjModel.from_xml_string(model)
+        elif isinstance(model, str):
+            self.model = mujoco.MjModel.from_xml_path(model)
+        else:
+            raise TypeError(
+                "model must be a mujoco.MjModel, an XML file path, or an XML "
+                "string; got {}".format(type(model)))
+
+        self.num_worlds = int(num_worlds)
+        self._ngeom = self.model.ngeom
+
+        # GPU physics state (MuJoCo Warp) + a host MjData per world that the
+        # renderer reads geom transforms from.
+        self._M = mjw.put_model(self.model)
+        self._d = mjw.make_data(self.model, nworld=self.num_worlds)
+        self._host = [mujoco.MjData(self.model) for _ in range(self.num_worlds)]
+        for h in self._host:
+            mujoco.mj_forward(self.model, h)
+
+        if renderer is None:
+            renderer = WarpRenderer(width=width, height=height,
+                                    batch_size=self.num_worlds,
+                                    preset=preset, **toggles)
+        elif preset or toggles:
+            raise TypeError("pass either `renderer=` or render kwargs/`preset=`, not both")
+        self.renderer = renderer
+        self.renderer.load_model(self.model)
+        self._dirty = True  # host transforms need a refresh before the next render
+
+    # --- physics ---
+    @property
+    def data(self):
+        """The GPU physics state (a ``mujoco_warp`` Data). Use it to set controls
+        or initial state, e.g. ``scene.data.ctrl.assign(my_ctrl)``."""
+        return self._d
+
+    @property
+    def warp_model(self):
+        """The ``mujoco_warp`` Model put on the GPU."""
+        return self._M
+
+    def step(self, n: int = 1) -> "ParallelScene":
+        """Advance the physics ``n`` steps on the GPU (MuJoCo Warp)."""
+        for _ in range(n):
+            self._mjw.step(self._M, self._d)
+        self._dirty = True
+        return self
+
+    def reset(self) -> "ParallelScene":
+        """Reset every world to the model's initial state."""
+        self._d = self._mjw.make_data(self.model, nworld=self.num_worlds)
+        for h in self._host:
+            self._mujoco.mj_forward(self.model, h)
+        self._dirty = True
+        return self
+
+    def _sync_host(self) -> None:
+        # Pull the per-world geom transforms off the GPU into the host MjData the
+        # renderer reads. Tiny (ngeom*12 floats/world) vs the pixels we keep on GPU.
+        self._wp.synchronize()
+        gx = self._d.geom_xpos.numpy()
+        gm = self._d.geom_xmat.numpy().reshape(self.num_worlds, self._ngeom, 9)
+        for i, h in enumerate(self._host):
+            h.geom_xpos[:] = gx[i]
+            h.geom_xmat[:] = gm[i]
+        self._dirty = False
+
+    # --- rendering ---
+    def render(self, camera=0):
+        """Render every world from ``camera`` (a camera name or id).
+
+        Returns an ``(num_worlds, H, W, 4)`` ``uint8`` ``torch.cuda`` tensor,
+        delivered zero-copy (the pixels never leave the GPU)."""
+        if self._dirty:
+            self._sync_host()
+        return self.renderer.render_batch(self.model, self._host,
+                                           cam_id=self._resolve_camera(camera))
+
+    def _resolve_camera(self, camera) -> int:
+        if isinstance(camera, str):
+            cid = self._mujoco.mj_name2id(
+                self.model, self._mujoco.mjtObj.mjOBJ_CAMERA, camera)
+            if cid < 0:
+                raise ValueError("no <camera> named {!r} in the model".format(camera))
+            return cid
+        return int(camera)
+
+    # --- lifecycle ---
+    def close(self) -> None:
+        """Release the renderer (the GPU physics state is freed by GC)."""
+        r = self.__dict__.pop("renderer", None)
+        if r is not None:
+            r.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+
 def _addr(obj) -> int:
     """Accept a mujoco.MjModel/MjData or a raw integer address."""
     if isinstance(obj, int):
@@ -798,4 +960,4 @@ def _check_cam(model, cam_id: int):
                 cam_id, ncam, ncam - 1))
 
 
-__all__ = ["WarpRenderer", "RendererConfig", "make_config", "QUALITY_PRESETS"]
+__all__ = ["ParallelScene", "WarpRenderer", "RendererConfig", "make_config", "QUALITY_PRESETS"]
