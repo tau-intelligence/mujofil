@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>MuJoFil — photoreal GPU simulation for vision-based RL</title>
-<meta name="description" content="MuJoFil pairs MuJoCo Warp's GPU physics with a parallel, high-fidelity rasterization renderer forked from Google Filament — photoreal training observations delivered zero-copy to PyTorch. Drop in any Sketchfab / Poly Haven environment." />
-<meta property="og:title" content="MuJoFil — photoreal GPU simulation for vision-based RL" />
-<meta property="og:description" content="MuJoCo Warp physics + a parallel Filament-fork renderer, zero-copy to PyTorch. Drop in any photoreal environment for RL." />
-<meta property="og:image" content="img/hero_sponza.png" />
+<title>MuJoFil · photoreal GPU simulation for vision-based RL</title>
+<meta name="description" content="MuJoFil pairs MuJoCo Warp's GPU physics with a parallel, high-fidelity rasterization renderer forked from Google Filament, giving photoreal training observations for reinforcement learning. Drop in any Sketchfab or Poly Haven environment." />
+<meta property="og:title" content="MuJoFil · photoreal GPU simulation for vision-based RL" />
+<meta property="og:description" content="MuJoCo Warp physics plus a parallel Filament-fork renderer. Drop in any photoreal environment and train your robot's policy." />
+<meta property="og:image" content="img/hero_wide.png" />
 <meta property="og:type" content="website" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -46,16 +46,17 @@ body::before{content:"";position:fixed;inset:0;background:radial-gradient(1200px
 .nav-cta:hover{background:var(--primary);color:var(--bg) !important}
 
 /* hero */
-.hero{position:relative;min-height:88vh;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:90px 24px 60px;max-width:var(--maxw);margin:0 auto;overflow:hidden}
+.hero{position:relative;min-height:92vh;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:90px 24px 60px;max-width:var(--maxw);margin:0 auto;overflow:hidden}
 .hero-img{position:absolute;inset:0;z-index:0}
-.hero-img img{width:100%;height:100%;object-fit:cover;opacity:.34}
-.hero-img::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,rgba(14,13,11,.55),rgba(14,13,11,.82) 65%,var(--bg))}
-.hero-copy{position:relative;z-index:2;max-width:760px}
+.hero-img img{width:100%;height:100%;object-fit:cover;opacity:.42}
+.hero-img::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,rgba(14,13,11,.45),rgba(14,13,11,.78) 65%,var(--bg))}
+.hero-copy{position:relative;z-index:2;max-width:780px}
 .eyebrow{display:inline-flex;align-items:center;gap:10px;font-family:var(--font-mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--accent);padding:6px 14px;border:1px solid var(--line);border-radius:999px;background:rgba(255,255,255,.02)}
 .eyebrow .dot{width:6px;height:6px;border-radius:50%;background:var(--primary);box-shadow:0 0 12px var(--primary)}
 .hero h1{font-family:var(--font-serif);font-weight:600;font-size:clamp(42px,7vw,82px);line-height:1.02;margin:24px 0 16px;letter-spacing:-.01em}
 .hero h1 .o{color:var(--primary)}
-.hero .lede{font-size:19px;color:var(--text-dim);max-width:640px;margin:0 auto 30px}
+.hero .lede{font-size:19px;color:var(--text-dim);max-width:660px;margin:0 auto 30px}
+.hero .lede b{color:var(--text);font-weight:600}
 .btn-row{display:flex;flex-wrap:wrap;gap:14px;justify-content:center}
 .btn{display:inline-flex;align-items:center;gap:10px;padding:12px 22px;border-radius:999px;font-size:15px;font-weight:500;border:1px solid transparent;cursor:pointer;transition:transform .15s var(--ease),background .2s,color .2s,border-color .2s}
 .btn-primary{background:var(--primary);color:#1a0f06}
@@ -115,7 +116,6 @@ th{color:var(--text);font-weight:600}
 tr:last-child td{border-bottom:0}
 td.win{color:var(--primary);font-weight:600}
 td.dim{color:var(--text-mute)}
-caption{caption-side:bottom;color:var(--text-mute);font-size:12.5px;padding:10px 4px;text-align:left;font-style:italic}
 .note{font-size:13.5px;color:var(--text-mute);margin-top:14px;line-height:1.6}
 
 /* code */
@@ -172,17 +172,17 @@ pre code{color:var(--text)}
       <a href="#video">Video</a>
       <a href="#benchmarks">Benchmarks</a>
       <a href="#start">Get started</a>
-      <a class="nav-cta" href="https://github.com/tau-intelligence/mujofil-warp" target="_blank" rel="noopener">GitHub ↗</a>
+      <a class="nav-cta" href="https://github.com/tau-intelligence/mujofil-warp" target="_blank" rel="noopener">GitHub &#8599;</a>
     </div>
   </div>
 </nav>
 
 <header class="hero" id="top">
-  <div class="hero-img"><img src="img/hero_sponza.png" alt="Photoreal Sponza rendered by MuJoFil" /></div>
+  <div class="hero-img"><img src="img/hero_wide.png" alt="Photoreal Sponza atrium rendered by MuJoFil" /></div>
   <div class="hero-copy">
     <span class="eyebrow"><span class="dot"></span> by Tau Intelligence · open source</span>
     <h1>Photoreal worlds for<br/><span class="o">vision-based</span> robot learning.</h1>
-    <p class="lede">MuJoFil plugs <strong>MuJoCo Warp</strong>'s GPU physics into a parallel, high-fidelity rasterization renderer — a fork of Google Filament — and streams photoreal observations <strong>zero-copy to PyTorch</strong>. Drop in any environment and train.</p>
+    <p class="lede"><b>MuJoFil</b> turns GPU-resident MuJoCo Warp simulations into photoreal training observations, using a parallel rasterization renderer forked from Google Filament. Drop in any environment and train your robot's policy inside it.</p>
     <div class="btn-row">
       <a class="btn btn-primary" href="#start">pip install mujofil-warp</a>
       <a class="btn btn-ghost" href="https://github.com/tau-intelligence/mujofil-warp" target="_blank" rel="noopener">View on GitHub</a>
@@ -190,7 +190,7 @@ pre code{color:var(--text)}
     <div class="hero-meta">
       <span>MuJoCo Warp physics</span>
       <span>Filament-fork PBR</span>
-      <span>zero-copy torch.cuda</span>
+      <span>parallel batch render</span>
       <span>glTF · GLB · USD</span>
     </div>
   </div>
@@ -202,15 +202,15 @@ pre code{color:var(--text)}
     <div class="section-title reveal">
       <span class="kicker">What it is</span>
       <h2>A simulation pipeline, not a new physics engine.</h2>
-      <p>The honest version, up front — because positioning matters more than hype.</p>
+      <p>The honest version, up front, because positioning matters more than hype.</p>
     </div>
     <div class="prose reveal">
-      <p class="lead">MuJoFil is two pieces working as one: <strong>MuJoCo Warp</strong> for high-throughput GPU physics, and an <strong>efficient, GPU-parallel rasterization renderer</strong> (forked from Google Filament) for photoreal frames. We wire them together so you get the best of both — fast parallel dynamics <em>and</em> fast, parallel, physically-based visuals — delivered to PyTorch with no GPU→CPU→GPU bounce for the pixels.</p>
-      <p>We don't reimplement dynamics. The simulation is MuJoCo Warp (DeepMind + NVIDIA's GPU MuJoCo). <strong>Our work is the renderer and the zero-copy GPU→PyTorch pipeline</strong> that turns GPU-resident world states into training-ready observations — something neither MuJoCo nor MuJoCo Warp's built-in raycaster does (it's flat-shaded and can't load real environments).</p>
+      <p class="lead"><strong>MuJoFil</strong> is two pieces working as one: <strong>MuJoCo Warp</strong> for high-throughput GPU physics, and an efficient, GPU-parallel rasterization renderer (forked from Google Filament) for photoreal frames. We wire them together so you get the best of both: fast parallel dynamics and fast, parallel, physically-based visuals, ready for your learning loop.</p>
+      <p>We don't reimplement dynamics. The simulation is MuJoCo Warp (DeepMind and NVIDIA's GPU MuJoCo). <strong>Our work is the renderer and the pipeline around it</strong> that turns GPU-resident world states into training-ready observations, something neither MuJoCo nor MuJoCo Warp's built-in raycaster does (it is flat-shaded and cannot load real environments).</p>
     </div>
     <div class="callout reveal" style="max-width:760px">
-      <div class="ic">τ</div>
-      <p><strong>The middle of the spectrum.</strong> Not the highest fidelity (we're rasterization — PBR, IBL, SSAO, reflections — <em>not</em> path-traced like Omniverse), and not the fastest (a flat raycaster trades all shading for throughput). MuJoFil targets the practical middle: photoreal-enough RGB that runs on a <strong>mid-range GPU</strong>.</p>
+      <div class="ic">&#964;</div>
+      <p><strong>The middle of the spectrum.</strong> Not the highest fidelity (we are rasterization: PBR, IBL, SSAO, reflections, not path-traced like Omniverse), and not the fastest (a flat raycaster trades all shading for throughput). MuJoFil targets the practical middle: photoreal-enough RGB that runs on a <strong>mid-range GPU</strong>.</p>
     </div>
   </div>
 </section>
@@ -220,7 +220,7 @@ pre code{color:var(--text)}
   <div class="container">
     <div class="section-title reveal">
       <span class="kicker">How it works</span>
-      <h2>From GPU physics to a torch.cuda observation.</h2>
+      <h2>From GPU physics to a training observation.</h2>
       <p>One step of the loop, end to end.</p>
     </div>
     <div class="pipe reveal">
@@ -229,35 +229,35 @@ pre code{color:var(--text)}
         <h4>MuJoCo Warp steps N worlds</h4>
         <p>Thousands of parallel MuJoCo worlds advance entirely on the GPU as CUDA kernels.</p>
       </div>
-      <div class="pipe-arrow">→</div>
+      <div class="pipe-arrow">&#8594;</div>
       <div class="pipe-step">
         <div class="t">02 · Render</div>
         <h4>Filament fork, one instanced pass</h4>
-        <p>A forked Filament GL backend draws all worlds in a single <code>gl_Layer</code> pass — full PBR, IBL, shadows, reflections.</p>
+        <p>A forked Filament GL backend draws every world in a single <code>gl_Layer</code> pass, with full PBR, IBL, shadows and reflections.</p>
       </div>
-      <div class="pipe-arrow">→</div>
+      <div class="pipe-arrow">&#8594;</div>
       <div class="pipe-step">
         <div class="t">03 · Deliver</div>
-        <h4>Zero-copy to PyTorch</h4>
-        <p>Filament renders into GPU memory CUDA imports directly — frames arrive as <code>torch.cuda</code> tensors, no CPU round-trip.</p>
+        <h4>Straight into PyTorch</h4>
+        <p>Frames land in GPU memory as <code>torch.cuda</code> tensors, ready for a CNN, ViT or VLA policy.</p>
       </div>
     </div>
 
     <div class="cap-grid reveal" style="margin-top:46px">
       <div class="cap-card">
-        <div class="icon">⚡</div>
+        <div class="icon">&#9889;</div>
         <h3>Parallel rasterization</h3>
-        <p>A forked Filament GL backend renders many worlds in one instanced draw with per-world GPU transforms — parallel by construction, not a per-world Python loop.</p>
+        <p>A forked Filament GL backend renders many worlds in one instanced draw with per-world GPU transforms, parallel by construction rather than a per-world Python loop.</p>
       </div>
       <div class="cap-card">
-        <div class="icon">◳</div>
-        <h3>Zero-copy observations</h3>
-        <p>Pixels are exported to CUDA via GL/Vulkan external memory and handed to PyTorch through DLPack — no GPU→CPU→GPU transfer that scales with resolution.</p>
+        <div class="icon">&#9728;</div>
+        <h3>Real materials and light</h3>
+        <p>Metalness and roughness PBR, image-based lighting, soft shadows, SSAO, bloom, screen-space reflections and filmic tone mapping: the appearance cues flat renderers lack.</p>
       </div>
       <div class="cap-card">
-        <div class="icon">✦</div>
-        <h3>Real materials &amp; light</h3>
-        <p>Metalness/roughness PBR, image-based lighting, soft shadows, SSAO, bloom, screen-space reflections and filmic tone mapping — the appearance cues flat renderers lack.</p>
+        <div class="icon">&#9670;</div>
+        <h3>Tuned for the training loop</h3>
+        <p>Quality presets trade fidelity for throughput with one keyword, the renderer keeps pixels on the GPU, and observations arrive as PyTorch tensors with no detour.</p>
       </div>
     </div>
   </div>
@@ -271,13 +271,13 @@ pre code{color:var(--text)}
         <span class="kicker">Drop in any world</span>
         <h2 style="font-family:var(--font-serif);font-weight:600;font-size:clamp(28px,3.8vw,44px);margin:10px 0 16px;letter-spacing:-.005em">Train inside real environments.</h2>
         <div class="prose">
-          <p>MuJoCo and its raycaster can't load real 3D scenes. MuJoFil can. Pull a model from <strong>Sketchfab</strong>, <strong>Poly Haven</strong> or any glTF / GLB / OBJ / USD source and train your robot's policy inside a photoreal world — with an optional tool that auto-generates the collision mesh so the robot actually interacts with the geometry.</p>
-          <p>The renders on this page are all produced by MuJoFil, fresh — Intel Sponza, an industrial warehouse, a modern living room, a café, an art gallery.</p>
+          <p>MuJoCo and its raycaster cannot load real 3D scenes. MuJoFil can. Pull a model from <strong>Sketchfab</strong>, <strong>Poly Haven</strong> or any glTF, GLB, OBJ or USD source and train your robot's policy inside a photoreal world, with an optional tool that auto-generates the collision mesh so the robot actually interacts with the geometry.</p>
+          <p>The renders on this page are all produced by MuJoFil, fresh: Intel Sponza, an industrial warehouse, a modern living room, a caf&#233; and an art gallery.</p>
         </div>
       </div>
       <div class="tile reveal">
         <img src="img/warehouse.png" alt="Industrial warehouse rendered by MuJoFil" />
-        <div class="cap"><b>Industrial warehouse</b> · PBR floor + ceiling fixtures + reflections</div>
+        <div class="cap"><b>Industrial warehouse</b> · PBR floor, ceiling fixtures, reflections</div>
       </div>
     </div>
   </div>
@@ -289,7 +289,7 @@ pre code{color:var(--text)}
     <div class="section-title reveal">
       <span class="kicker">Gallery</span>
       <h2>Rendered fresh by MuJoFil.</h2>
-      <p>Every frame below is the actual renderer output — full PBR, image-based lighting, real reflections.</p>
+      <p>Every frame below is the actual renderer output: full PBR, image-based lighting, real reflections.</p>
     </div>
     <div class="gallery reveal">
       <div class="tile">
@@ -298,8 +298,8 @@ pre code{color:var(--text)}
       </div>
       <div class="col">
         <div class="tile">
-          <img src="img/cafe.png" alt="Café interior" />
-          <div class="cap"><b>Café</b> · Sketchfab · CC-BY</div>
+          <img src="img/cafe.png" alt="Caf&#233; interior" />
+          <div class="cap"><b>Caf&#233;</b> · Sketchfab · CC-BY</div>
         </div>
         <div class="tile">
           <img src="img/living.png" alt="Modern living room" />
@@ -326,7 +326,7 @@ pre code{color:var(--text)}
     <div class="section-title reveal">
       <span class="kicker">Watch</span>
       <h2>MuJoFil in motion.</h2>
-      <p>The cinematic walkthrough — environments, the renderer, and the pipeline.</p>
+      <p>The cinematic walkthrough: environments, the renderer and the pipeline.</p>
     </div>
     <div class="video-wrap reveal">
       <iframe src="https://www.youtube.com/embed/7jVbFwwt-Bg" title="MuJoFil" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen loading="lazy"></iframe>
@@ -340,45 +340,45 @@ pre code{color:var(--text)}
     <div class="section-title reveal">
       <span class="kicker">Benchmarks</span>
       <h2>Honest numbers, freshly measured.</h2>
-      <p>RTX 4060 Laptop (8&nbsp;GiB), one primitives scene, full loop = GPU physics + one batched render of N&nbsp;worlds → <code>torch.cuda</code>. Subprocess-isolated, best-of-2.</p>
+      <p>RTX 4060 Laptop (8&nbsp;GiB), one primitives scene, full loop = GPU physics plus one batched render of N&nbsp;worlds into PyTorch. Subprocess-isolated, best-of-2.</p>
     </div>
 
     <div class="reveal" style="margin-bottom:28px">
-      <h3 style="font-family:var(--font-serif);font-weight:600;font-size:21px;margin:0 0 12px">Throughput — env-steps / second (128&nbsp;px)</h3>
+      <h3 style="font-family:var(--font-serif);font-weight:600;font-size:21px;margin:0 0 12px">Throughput, env-steps per second (128&nbsp;px)</h3>
       <div class="tbl-scroll">
         <table>
           <thead><tr><th>Mode</th><th>N=16</th><th>N=64</th><th>N=256</th><th>N=1024</th></tr></thead>
           <tbody>
             <tr><td>Physics only (no vision)</td><td class="dim">3,865</td><td class="dim">19,119</td><td class="dim">69,523</td><td class="dim">307,679</td></tr>
-            <tr><td>MuJoCo Warp — depth raycaster</td><td>616</td><td>2,366</td><td>8,802</td><td>26,481</td></tr>
-            <tr><td>MuJoCo Warp — flat RGB raycaster</td><td>612</td><td>2,357</td><td>8,451</td><td>24,372</td></tr>
-            <tr><td>MuJoFil — photoreal RGB (default)</td><td class="win">2,199</td><td class="win">4,756</td><td>7,602</td><td>8,016</td></tr>
-            <tr><td>MuJoFil — photoreal RGB (layered)</td><td>1,692</td><td class="win">6,257</td><td class="win">10,925</td><td>13,933</td></tr>
+            <tr><td>MuJoCo Warp, depth raycaster</td><td>616</td><td>2,366</td><td>8,802</td><td>26,481</td></tr>
+            <tr><td>MuJoCo Warp, flat RGB raycaster</td><td>612</td><td>2,357</td><td>8,451</td><td>24,372</td></tr>
+            <tr><td>MuJoFil, photoreal RGB (default)</td><td class="win">2,199</td><td class="win">4,756</td><td>7,602</td><td>8,016</td></tr>
+            <tr><td>MuJoFil, photoreal RGB (layered)</td><td>1,692</td><td class="win">6,257</td><td class="win">10,925</td><td>13,933</td></tr>
           </tbody>
         </table>
       </div>
-      <p class="note"><strong style="color:var(--text)">Read it honestly.</strong> At the batch sizes most people train at (16–256), MuJoFil's <em>photoreal</em> RGB is as fast as — or faster than — MuJoCo Warp's own <em>depth</em> raycaster, while delivering full PBR. MuJoCo Warp's raycaster is a fully parallel megakernel, so it scales past us at very large N (N=1024): it wins raw throughput by trading away all visual fidelity. We're a rasterizer; we plateau. Different categories, stated plainly.</p>
+      <p class="note"><strong style="color:var(--text)">Read it honestly.</strong> At the batch sizes most people train at (16 to 256), MuJoFil's <em>photoreal</em> RGB is as fast as, or faster than, MuJoCo Warp's own <em>depth</em> raycaster, while delivering full PBR. MuJoCo Warp's raycaster is a fully parallel megakernel, so it scales past us at very large N (N=1024): it wins raw throughput by trading away all visual fidelity. We are a rasterizer; we plateau. Different categories, stated plainly.</p>
     </div>
 
     <div class="reveal">
-      <h3 style="font-family:var(--font-serif);font-weight:600;font-size:21px;margin:0 0 12px">Latency — milliseconds per batched frame (128&nbsp;px)</h3>
+      <h3 style="font-family:var(--font-serif);font-weight:600;font-size:21px;margin:0 0 12px">Latency, milliseconds per batched frame (128&nbsp;px)</h3>
       <div class="tbl-scroll">
         <table>
           <thead><tr><th>Mode</th><th>N=16</th><th>N=64</th><th>N=256</th><th>N=1024</th></tr></thead>
           <tbody>
             <tr><td>Physics only</td><td class="dim">4.1</td><td class="dim">3.4</td><td class="dim">3.7</td><td class="dim">3.3</td></tr>
-            <tr><td>MuJoCo Warp — depth</td><td>26.0</td><td>27.1</td><td>29.1</td><td>38.7</td></tr>
-            <tr><td>MuJoFil — RGB (default)</td><td>7.3</td><td>13.5</td><td>33.7</td><td>127.7</td></tr>
-            <tr><td>MuJoFil — RGB (layered)</td><td>9.5</td><td>10.2</td><td>23.4</td><td>73.5</td></tr>
+            <tr><td>MuJoCo Warp, depth</td><td>26.0</td><td>27.1</td><td>29.1</td><td>38.7</td></tr>
+            <tr><td>MuJoFil, RGB (default)</td><td>7.3</td><td>13.5</td><td>33.7</td><td>127.7</td></tr>
+            <tr><td>MuJoFil, RGB (layered)</td><td>9.5</td><td>10.2</td><td>23.4</td><td>73.5</td></tr>
           </tbody>
         </table>
       </div>
-      <p class="note">We publish latency next to throughput on purpose. Throughput rising with N just means fixed per-batch overhead amortizes — per-frame time still climbs. The layered path's vectorized tone-map keeps that climb in check (it's ~3× faster at N=1024 than the per-world version it replaced).</p>
+      <p class="note">We publish latency next to throughput on purpose. Throughput rising with N just means fixed per-batch overhead amortizes; per-frame time still climbs. The layered path's vectorized tone-map keeps that climb in check (about 3x faster at N=1024 than the per-world version it replaced).</p>
     </div>
 
     <div class="callout reveal" style="margin-top:30px;max-width:none;border-left-color:var(--accent-2);background:linear-gradient(180deg,rgba(111,183,201,.07),transparent 80%),var(--surface)">
       <div class="ic" style="background:var(--accent-2)">i</div>
-      <p><strong>On "300,000 steps/s".</strong> That's <em>physics with nothing attached</em> — a state-based RL ceiling. The moment you render pixels and run a policy network, the renderer and the encoder become the bottleneck, and practical vision-RL lives at ~1k–15k env-steps/s. MuJoFil's job is to make the <em>render</em> fast enough to stay off the critical path — not to pretend vision training runs at physics speed.</p>
+      <p><strong>On "300,000 steps per second".</strong> That is <em>physics with nothing attached</em>, a state-based RL ceiling. The moment you render pixels and run a policy network, the renderer and the encoder become the bottleneck, and practical vision-RL lives around 1k to 15k env-steps per second. MuJoFil's job is to make the <em>render</em> fast enough to stay off the critical path, not to pretend vision training runs at physics speed.</p>
     </div>
   </div>
 </section>
@@ -389,15 +389,15 @@ pre code{color:var(--text)}
     <div class="section-title reveal">
       <span class="kicker">Get started</span>
       <h2>One install, one import.</h2>
-      <p>Your code imports only <code>mujofil_warp</code> — MuJoCo Warp and the renderer are driven for you.</p>
+      <p>Your code imports only <code>mujofil_warp</code>. MuJoCo Warp and the renderer are driven for you.</p>
     </div>
     <div class="two" style="align-items:start">
       <div class="reveal">
-        <pre><code><span class="tok-c"># one self-contained wheel — NVIDIA GPU + driver is all you need</span>
+        <pre><code><span class="tok-c"># one self-contained wheel, an NVIDIA GPU is all you need</span>
 $ pip install mujofil-warp</code></pre>
         <pre style="margin-top:14px"><code><span class="tok-k">import</span> mujofil_warp
 
-<span class="tok-c"># GPU physics (MuJoCo Warp) + photoreal rendering, one object</span>
+<span class="tok-c"># GPU physics (MuJoCo Warp) plus photoreal rendering, one object</span>
 scene = mujofil_warp.<span class="tok-f">ParallelScene</span>(
     <span class="tok-s">"scene.xml"</span>, num_worlds=<span class="tok-s">32</span>,
     width=<span class="tok-s">256</span>, height=<span class="tok-s">256</span>, preset=<span class="tok-s">"high"</span>)
@@ -409,19 +409,19 @@ scene = mujofil_warp.<span class="tok-f">ParallelScene</span>(
       <div class="reveal">
         <div class="prose" style="font-size:16px">
           <p class="lead" style="font-size:18px">What you get out of the box.</p>
-          <p><strong>Photoreal observations</strong> as zero-copy <code>torch.cuda</code> tensors, ready for a CNN / ViT / VLA policy. <strong>Quality presets</strong> (<code>high</code>, <code>fast</code>, <code>train</code>, …) trade fidelity for throughput with one keyword. <strong>Any environment</strong> via the optional <code>[usd]</code> tooling that converts a GLB/USD scene into a visual mesh plus a MuJoCo collision body.</p>
-          <p>The wheel is self-contained — Filament and the CUDA runtime are baked in. The only runtime requirement is an <strong>NVIDIA GPU + driver</strong>. Linux x86-64, Python 3.10–3.13.</p>
+          <p><strong>Photoreal observations</strong> as PyTorch tensors, ready for a CNN, ViT or VLA policy. <strong>Quality presets</strong> (<code>high</code>, <code>fast</code>, <code>train</code> and more) trade fidelity for throughput with one keyword. <strong>Any environment</strong> via the optional <code>[usd]</code> tooling that converts a GLB or USD scene into a visual mesh plus a MuJoCo collision body.</p>
+          <p>The wheel is self-contained: Filament and the CUDA runtime are baked in. The only runtime requirement is an <strong>NVIDIA GPU and driver</strong>. Linux x86-64, Python 3.10 to 3.13.</p>
         </div>
         <div class="btn-row" style="justify-content:flex-start;margin-top:18px">
-          <a class="btn btn-primary" href="https://github.com/tau-intelligence/mujofil-warp" target="_blank" rel="noopener">Docs &amp; source ↗</a>
-          <a class="btn btn-ghost" href="https://pypi.org/project/mujofil-warp/" target="_blank" rel="noopener">PyPI ↗</a>
+          <a class="btn btn-primary" href="https://github.com/tau-intelligence/mujofil-warp" target="_blank" rel="noopener">Docs and source &#8599;</a>
+          <a class="btn btn-ghost" href="https://pypi.org/project/mujofil-warp/" target="_blank" rel="noopener">PyPI &#8599;</a>
         </div>
       </div>
     </div>
 
     <div class="callout reveal" style="margin-top:34px;max-width:none">
-      <div class="ic">↺</div>
-      <p><strong>Running CPU MuJoCo instead?</strong> The sister package <a href="https://github.com/tau-intelligence/MuJoCo-Filament" target="_blank" rel="noopener">mujofil</a> is the same Filament renderer for standard CPU MuJoCo — photoreal frames as NumPy arrays, a drop-in swap for <code>mujoco.Renderer</code>.</p>
+      <div class="ic">&#8634;</div>
+      <p><strong>Running CPU MuJoCo instead?</strong> The sister package <a href="https://github.com/tau-intelligence/MuJoCo-Filament" target="_blank" rel="noopener">mujofil</a> is the same Filament renderer for standard CPU MuJoCo: photoreal frames as NumPy arrays, a drop-in swap for <code>mujoco.Renderer</code>.</p>
     </div>
   </div>
 </section>
@@ -439,15 +439,13 @@ scene = mujofil_warp.<span class="tok-f">ParallelScene</span>(
     </div>
   </div>
   <div class="footer-inner" style="margin-top:14px;color:var(--text-mute);font-size:12px">
-    <span>Apache-2.0 · Scene assets CC-BY from their respective authors (Khronos, Sketchfab, Poly Haven). Rendered with MuJoFil.</span>
+    <span>Apache-2.0. Scene assets CC-BY from their respective authors (Khronos, Sketchfab, Poly Haven). Rendered with MuJoFil.</span>
   </div>
 </footer>
 
 <script>
-// reveal on scroll
 const io=new IntersectionObserver((es)=>{es.forEach(e=>{if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target);}})},{threshold:.12});
 document.querySelectorAll('.reveal').forEach(el=>io.observe(el));
-// active nav highlight
 const links=[...document.querySelectorAll('.nav-links a[href^="#"]')];
 const map=new Map(links.map(a=>[a.getAttribute('href').slice(1),a]));
 const so=new IntersectionObserver((es)=>{es.forEach(e=>{if(e.isIntersecting){links.forEach(a=>a.style.color='');const a=map.get(e.target.id);if(a)a.style.color='var(--primary)';}})},{rootMargin:'-40% 0px -55% 0px'});
