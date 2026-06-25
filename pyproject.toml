@@ -3,9 +3,9 @@ requires = ["scikit-build-core>=0.8", "pybind11>=2.11"]
 build-backend = "scikit_build_core.build"
 
 [project]
-name = "mujofil-warp"
-version = "0.1.8"
-description = "Photoreal Filament PBR rendering for GPU-resident MuJoCo (MJWarp), zero-copy to PyTorch"
+name = "mujofil"
+version = "0.2.0"
+description = "Photoreal Filament PBR rendering for GPU-resident MuJoCo, zero-copy to PyTorch"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
@@ -29,29 +29,29 @@ dependencies = [
 torch = ["torch>=2.4"]
 examples = ["pillow"]
 # Asset tooling: convert USD / GLB environments into a visual GLB + a MuJoCo
-# collision MJCF (mujofil_warp.tools.usd_to_assets / glb_to_collision). Heavy
-# deps, so kept optional -- only with `pip install "mujofil-warp[usd]"`.
+# collision MJCF (mujofil.tools.usd_to_assets / glb_to_collision). Heavy
+# deps, so kept optional -- only with `pip install "mujofil[usd]"`.
 # Self-pin to this exact version so the resolver can't backtrack to an older
-# mujofil-warp that lacks the [usd] extra.
-usd = ["mujofil-warp==0.1.8", "usd-core>=23.0", "trimesh>=4.0", "scipy>=1.7", "coacd>=1.0", "pillow", "numpy"]
+# mujofil that lacks the [usd] extra.
+usd = ["mujofil==0.2.0", "usd-core>=23.0", "trimesh>=4.0", "scipy>=1.7", "coacd>=1.0", "pillow", "numpy"]
 
 [project.scripts]
-mujofil-warp-usd-to-assets = "mujofil_warp.tools.usd_to_assets:main"
-mujofil-warp-glb-to-collision = "mujofil_warp.tools.glb_to_collision:main"
+mujofil-usd-to-assets = "mujofil.tools.usd_to_assets:main"
+mujofil-glb-to-collision = "mujofil.tools.glb_to_collision:main"
 
 [project.urls]
-Homepage = "https://github.com/tau-intelligence/mujofil-warp"
-Repository = "https://github.com/tau-intelligence/mujofil-warp"
-Issues = "https://github.com/tau-intelligence/mujofil-warp/issues"
+Homepage = "https://github.com/tau-intelligence/mujofil"
+Repository = "https://github.com/tau-intelligence/mujofil"
+Issues = "https://github.com/tau-intelligence/mujofil/issues"
 
 # ============================================================================
 # scikit-build-core: drive the CMake build. The native modules
 # (_mujofil_warp_gl, _mujofil_warp) + compiled materials install into the
-# mujofil_warp/ package. Filament is auto-downloaded by CMake at build time.
+# mujofil/ package. Filament is auto-downloaded by CMake at build time.
 # ============================================================================
 [tool.scikit-build]
 cmake.build-type = "Release"
-wheel.packages = ["mujofil_warp"]
+wheel.packages = ["mujofil", "mujofil_warp"]
 sdist.include = [
     "CMakeLists.txt",
     "native/render_module.cpp",
@@ -62,9 +62,9 @@ sdist.include = [
     "third_party/bluevk",
     "third_party/utils_include",
     "third_party/mujoco/include",
-    "mujofil_warp/materials",
-    "mujofil_warp/materials_layered",
-    "mujofil_warp/tools",
+    "mujofil/materials",
+    "mujofil/materials_layered",
+    "mujofil/tools",
     "packaging/build_filament_egl.sh",
     "packaging/filament-patches",
     "NOTICE",
@@ -93,7 +93,7 @@ build-frontend = "build"
 # Import-only smoke test (no GPU/X in CI): loads the .so, exercises backend
 # selection (falls back to the Vulkan module when DISPLAY is unset). No device
 # init happens at import, so this is safe on a GPU-less runner.
-test-command = "python -c \"import mujofil_warp; print('mujofil-warp', mujofil_warp.__version__)\""
+test-command = "python -c \"import mujofil; print('mujofil', mujofil.__version__)\""
 
 [tool.cibuildwheel.linux]
 manylinux-x86_64-image = "quay.io/pypa/manylinux_2_34_x86_64"

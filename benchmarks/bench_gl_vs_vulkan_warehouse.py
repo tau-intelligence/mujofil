@@ -55,7 +55,7 @@ def _warehouse(rr):
 
 def worker(backend, res, n, steps, warmup):
     import numpy as np, mujoco, mujoco_warp as mjw, warp as wp, torch
-    from mujofil_warp import WarpRenderer, RendererConfig
+    from mujofil import WarpRenderer, RendererConfig
     mjm = mujoco.MjModel.from_xml_string(SCENE)
     M = mjw.put_model(mjm); d = mjw.make_data(mjm, nworld=n)
     qp = d.qpos.numpy(); qp[:] += np.random.default_rng(0).uniform(-0.05, 0.05, qp.shape)

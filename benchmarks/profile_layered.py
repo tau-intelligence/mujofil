@@ -17,7 +17,7 @@ import mujoco_warp as mjw
 import warp as wp
 import torch
 
-from mujofil_warp import WarpRenderer, RendererConfig
+from mujofil import WarpRenderer, RendererConfig
 
 SCENE = """
 <mujoco>

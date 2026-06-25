@@ -119,10 +119,10 @@ def worker_mjwarp(res, iters, warmup, n):
 
 def worker_mujofil(res, iters, warmup, n, use_glb):
     os.environ.setdefault("MUJOFIL_WARP_BACKEND", "gl")
-    os.environ.setdefault("VF_MUJOCO_MATERIALS_DIR", os.path.join(HERE, "mujofil_warp", "materials"))
+    os.environ.setdefault("VF_MUJOCO_MATERIALS_DIR", os.path.join(HERE, "mujofil", "materials"))
     sys.path.insert(0, HERE); sys.path.insert(0, VFM)
     import mujoco, torch
-    from mujofil_warp import WarpRenderer, RendererConfig
+    from mujofil import WarpRenderer, RendererConfig
     m = mujoco.MjModel.from_xml_string(ROOM)
     cam = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_CAMERA, "ego")
     datas = _datas(m, n, mujoco)
@@ -152,10 +152,10 @@ def worker_mujofil_layered(res, iters, warmup, n, scene_key):
     LAYERED renderables (albedo+normal+MR+emissive maps) -> N egocentric views in
     ONE instanced draw."""
     os.environ.setdefault("MUJOFIL_WARP_BACKEND", "gl")
-    os.environ.setdefault("VF_MUJOCO_MATERIALS_DIR", os.path.join(HERE, "mujofil_warp", "materials"))
+    os.environ.setdefault("VF_MUJOCO_MATERIALS_DIR", os.path.join(HERE, "mujofil", "materials"))
     sys.path.insert(0, HERE); sys.path.insert(0, VFM)
     import mujoco, torch
-    from mujofil_warp import WarpRenderer, RendererConfig
+    from mujofil import WarpRenderer, RendererConfig
     from trailer.scenes import SCENES
     m = mujoco.MjModel.from_xml_string(ROOM)
     cam = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_CAMERA, "ego")

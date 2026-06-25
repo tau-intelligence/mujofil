@@ -27,7 +27,7 @@ from benchmarks.bench_gl_vs_vulkan_warehouse import SCENE, _warehouse  # noqa: E
 
 def worker_ours(res, n, steps, warmup):
     import numpy as np, mujoco, mujoco_warp as mjw, warp as wp, torch
-    from mujofil_warp import WarpRenderer, RendererConfig
+    from mujofil import WarpRenderer, RendererConfig
     mjm = mujoco.MjModel.from_xml_string(SCENE)
     M = mjw.put_model(mjm); d = mjw.make_data(mjm, nworld=n)
     host = [mujoco.MjData(mjm) for _ in range(n)]

@@ -5,10 +5,10 @@ Asserts shapes, dtypes, value ranges, distinctness. Exits nonzero on any failure
 import os, sys
 os.environ.setdefault("MUJOFIL_WARP_BACKEND", "gl")
 HERE = "/home/mumuksh/mujofil-warp"
-os.environ.setdefault("VF_MUJOCO_MATERIALS_DIR", os.path.join(HERE, "mujofil_warp", "materials"))
+os.environ.setdefault("VF_MUJOCO_MATERIALS_DIR", os.path.join(HERE, "mujofil", "materials"))
 sys.path.insert(0, HERE)
 import numpy as np, mujoco, torch
-from mujofil_warp import WarpRenderer, RendererConfig, make_config
+from mujofil import WarpRenderer, RendererConfig, make_config
 
 SCENE = """
 <mujoco>

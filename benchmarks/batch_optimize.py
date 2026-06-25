@@ -14,10 +14,10 @@ CHILD = r'''
 import os, sys, time
 os.environ.setdefault("MUJOFIL_WARP_BACKEND", "gl")
 HERE = "/home/mumuksh/mujofil-warp"; VFM = "/home/mumuksh/Visual-Fidelity-Mujoco"
-os.environ.setdefault("VF_MUJOCO_MATERIALS_DIR", os.path.join(HERE, "mujofil_warp", "materials"))
+os.environ.setdefault("VF_MUJOCO_MATERIALS_DIR", os.path.join(HERE, "mujofil", "materials"))
 sys.path.insert(0, HERE); sys.path.insert(0, VFM)
 import numpy as np, mujoco, torch
-from mujofil_warp import WarpRenderer, RendererConfig
+from mujofil import WarpRenderer, RendererConfig
 from trailer.scenes import SCENES
 ROBOT = """<mujoco><worldbody><body name="robot" pos="0 0 0.4"><freejoint/>
 <geom type="box" size="0.2 0.15 0.1" rgba="0 0 0 0"/>

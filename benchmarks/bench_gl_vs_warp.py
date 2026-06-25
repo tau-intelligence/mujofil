@@ -89,7 +89,7 @@ def worker_gl(res, n, iters, warmup):
 def worker_warp(res, n, iters, warmup):
     """mujofil-warp: Vulkan render -> CUDA zero-copy -> torch."""
     import mujoco, torch
-    from mujofil_warp import WarpRenderer, RendererConfig
+    from mujofil import WarpRenderer, RendererConfig
     m = mujoco.MjModel.from_xml_string(SCENE)
     datas = [mujoco.MjData(m) for _ in range(n)]
     for d in datas: mujoco.mj_forward(m, d)

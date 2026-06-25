@@ -14,7 +14,7 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def worker(which):
     sys.path.insert(0, HERE)
     import mujoco, torch, torch.nn as nn
-    from mujofil_warp import WarpRenderer
+    from mujofil import WarpRenderer
     if which == "floor":
         inc = '<mujoco><include file="scene.xml"/><worldbody><geom type="plane" size="20 20 .1" group="3"/></worldbody></mujoco>'
     else:

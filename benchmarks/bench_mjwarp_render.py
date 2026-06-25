@@ -26,7 +26,7 @@ import mujoco_warp as mjw
 import warp as wp
 import torch
 
-from mujofil_warp import WarpRenderer, RendererConfig
+from mujofil import WarpRenderer, RendererConfig
 
 WH = "/home/mumuksh/Visual-Fidelity-Mujoco/warehouse/data"
 A = os.path.join(WH, "assets")

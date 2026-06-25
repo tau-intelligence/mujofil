@@ -5,13 +5,13 @@ properly-framed eye-level camera derived from the scene's WORLD bounds.
 import os, sys, json
 os.environ.setdefault("MUJOFIL_WARP_BACKEND", "gl")
 HERE = "/home/mumuksh/mujofil-warp"
-os.environ.setdefault("VF_MUJOCO_MATERIALS_DIR", os.path.join(HERE, "mujofil_warp", "materials"))
+os.environ.setdefault("VF_MUJOCO_MATERIALS_DIR", os.path.join(HERE, "mujofil", "materials"))
 sys.path.insert(0, HERE)
 sys.path.insert(0, "/home/mumuksh/Visual-Fidelity-Mujoco")
 sys.path.insert(0, "/home/mumuksh/Visual-Fidelity-Mujoco/scripts")
 import numpy as np, torch, mujoco
-import mujofil_warp
-from mujofil_warp import WarpRenderer, RendererConfig
+import mujofil
+from mujofil import WarpRenderer, RendererConfig
 from PIL import Image
 from trailer.scenes import SCENES
 from glb_to_collision import _load_world_mesh, _xform_matrix

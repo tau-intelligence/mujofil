@@ -22,7 +22,7 @@ Copy-pasteable recipes for common tasks, then a troubleshooting table.
 
 ```python
 import mujoco, mujoco_warp as mjw, warp as wp
-from mujofil_warp import WarpRenderer
+from mujofil import WarpRenderer
 
 N = 256
 mjm = mujoco.MjModel.from_xml_path("scene.xml")   # needs a <camera>
@@ -54,7 +54,7 @@ Fast observations for learning, full fidelity for the eval video — **same scen
 two renderers**:
 
 ```python
-from mujofil_warp import WarpRenderer
+from mujofil import WarpRenderer
 
 train_r = WarpRenderer(width=128, height=128, batch_size=256, preset="train")
 eval_r  = WarpRenderer(width=512, height=512, batch_size=4,   preset="eval")
@@ -108,7 +108,7 @@ Image.fromarray(img).save("eval_frame.png")
 # default GL (surfaceless EGL, single-sync, fastest, headless):
 python my_train.py
 # force Vulkan (also headless; useful if GL can't init):
-MUJOFIL_WARP_BACKEND=vulkan python my_train.py
+MUJOFIL_BACKEND=vulkan python my_train.py
 ```
 
 GL auto-falls back to Vulkan if its module can't initialize. On cloud / cluster /
@@ -137,7 +137,7 @@ backend keeps it constant.
 |---|---|---|
 | **CUDA illegal access** during render | MJCF has no `<camera>` | Add a `<camera>` (the renderer indexes camera 0). |
 | `import` fails / no CUDA | No NVIDIA driver, or non-CUDA `torch` | Install driver ≥ R525; install a CUDA build of `torch`. |
-| Falls back to Vulkan unexpectedly | GL module couldn't init (e.g. no EGL device) | Fine if headless; force `MUJOFIL_WARP_BACKEND=gl` to see the error. |
+| Falls back to Vulkan unexpectedly | GL module couldn't init (e.g. no EGL device) | Fine if headless; force `MUJOFIL_BACKEND=gl` to see the error. |
 | Slow at large N | Vulkan backend's linear sync cost | Use the default `gl` backend (single-sync). |
 | Identical frames across batch worlds | Flushing too few in-flight frames | Don't set `MUJOFIL_WARP_FLUSH_EVERY` > 2 (Vulkan 2-frame in-flight cap). |
 | Metals render **black** | Nothing to reflect | `load_ibl(...)` or `load_glb(...)` so metals mirror an environment. |

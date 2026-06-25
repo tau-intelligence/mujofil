@@ -11,10 +11,10 @@ heading (a genuinely different egocentric view per world).
 import os, sys, itertools
 os.environ.setdefault("MUJOFIL_WARP_BACKEND", "gl")
 HERE = "/home/mumuksh/mujofil-warp"
-os.environ.setdefault("VF_MUJOCO_MATERIALS_DIR", os.path.join(HERE, "mujofil_warp", "materials"))
+os.environ.setdefault("VF_MUJOCO_MATERIALS_DIR", os.path.join(HERE, "mujofil", "materials"))
 sys.path.insert(0, HERE)
 import numpy as np, torch, mujoco
-from mujofil_warp import WarpRenderer, RendererConfig
+from mujofil import WarpRenderer, RendererConfig
 from PIL import Image
 
 # Native scene: floor, 4 distinct colored pillars around the origin, and a robot

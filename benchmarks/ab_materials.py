@@ -8,7 +8,7 @@ os.environ.setdefault("MUJOFIL_WARP_BACKEND", "gl")
 HERE = "/home/mumuksh/mujofil-warp"
 sys.path.insert(0, HERE)
 import numpy as np, torch, mujoco
-from mujofil_warp import WarpRenderer, RendererConfig
+from mujofil import WarpRenderer, RendererConfig
 from PIL import Image
 
 SCENE = """

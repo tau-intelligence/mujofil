@@ -8,13 +8,13 @@ import sys
 os.environ.setdefault("MUJOFIL_WARP_BACKEND", "gl")
 HERE = "/home/mumuksh/mujofil-warp"
 os.environ.setdefault("VF_MUJOCO_MATERIALS_DIR",
-                      os.path.join(HERE, "mujofil_warp", "materials_layered"))
+                      os.path.join(HERE, "mujofil", "materials"))
 sys.path.insert(0, HERE)
 
 import numpy as np
 import mujoco
 from PIL import Image
-from mujofil_warp import WarpRenderer, RendererConfig
+from mujofil import WarpRenderer, RendererConfig
 
 OUT = os.path.join(HERE, "site_assets", "img")
 os.makedirs(OUT, exist_ok=True)
@@ -28,7 +28,7 @@ SCENE = """
     <material name="gold"   rgba="1.0 0.78 0.34 1"  metallic="1.0" roughness="0.20"/>
     <material name="copper" rgba="0.95 0.55 0.35 1" metallic="1.0" roughness="0.30"/>
     <material name="teal"   rgba="0.20 0.62 0.70 1" metallic="0.3" roughness="0.35"/>
-    <material name="floor"  rgba="0.42 0.40 0.38 1" metallic="0.0" roughness="0.55"/>
+    <material name="floor"  rgba="0.20 0.19 0.18 1" metallic="0.0" roughness="0.45"/>
   </asset>
   <worldbody>
     <geom name="floor" type="plane" size="10 10 0.1" material="floor"/>
@@ -68,11 +68,19 @@ def main(n=16, res=320):
     cfg = RendererConfig()
     cfg.width = cfg.height = res
     cfg.batch_size = n
-    cfg.layered = True
-    cfg.exposure = -0.6
+    cfg.enable_shadows = True
+    cfg.enable_ssao = True
+    cfg.enable_bloom = True
+    cfg.exposure = 0.2
     r = WarpRenderer(cfg)
     r.load_model(m)
-    a = r.render_batch_layered(m, datas, cam_id=0)[..., :3].clamp(0, 255).byte().cpu().numpy()
+    ibl = os.path.join(HERE, "assets", "ibl", "studio")
+    ii = os.path.join(ibl, "studio_ibl_ibl.ktx")
+    ss = os.path.join(ibl, "studio_ibl_skybox.ktx")
+    if os.path.exists(ii):
+        r.load_ibl(ii, ss)
+    r.set_ambient_intensity(9000.0)
+    a = r.render_batch(m, datas, cam_id=0)[..., :3].clamp(0, 255).byte().cpu().numpy()
     Image.fromarray(montage(a)).save(os.path.join(OUT, "parallel_montage.png"))
     print(f"saved {OUT}/parallel_montage.png  ({n} worlds, {res}px, bright={a.mean():.0f})")
     r.close()

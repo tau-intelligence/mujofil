@@ -1,4 +1,4 @@
-# mujofil-warp — Feasibility & Architecture
+# mujofil — Feasibility & Architecture
 
 **Goal:** render MJWarp's GPU-resident parallel MuJoCo worlds with Google
 Filament's physically-based renderer (PBR + IBL + soft shadows), keeping data on
@@ -12,7 +12,7 @@ we **fill the fidelity gap MJWarp explicitly left open.**
 
 ## 1. Where each system keeps its data (the crux)
 
-| Stage | MJWarp | CPU-mujofil (existing) | mujofil-warp (target) |
+| Stage | MJWarp | CPU-mujofil (existing) | mujofil (target) |
 |---|---|---|---|
 | Physics state | **GPU** (Warp arrays) | CPU (`mjData`) | **GPU** (Warp arrays) |
 | Geom transforms (`geom_xpos/xmat`) | GPU | CPU | GPU → renderer |
@@ -22,7 +22,7 @@ we **fill the fidelity gap MJWarp explicitly left open.**
 
 The existing CPU `mujofil` pays **3 CPU↔GPU crossings per step** (upload
 transforms, read back pixels, re-upload pixels). MJWarp pays **0**. The entire
-point of mujofil-warp is to get as close to 0 as possible while substituting
+point of mujofil is to get as close to 0 as possible while substituting
 Filament's PBR for MJWarp's flat shading.
 
 ### Cost asymmetry — what actually has to stay on the GPU

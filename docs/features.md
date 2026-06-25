@@ -6,7 +6,7 @@ toggle that controls it.
 > The **same renderer** powers the CPU edition
 > [`mujofil`](https://github.com/tau-intelligence/MuJoCo-Filament); the option
 > names differ slightly there (e.g. `enable_ssao` on a `RenderConfig` instead of
-> the `ssao` toggle). This page documents the `mujofil-warp` toggles (used via
+> the `ssao` toggle). This page documents the `mujofil` toggles (used via
 > `WarpRenderer(...)` kwargs or `make_config`).
 
 | Feature | Toggle | Cost | Default |
@@ -18,7 +18,7 @@ toggle that controls it.
 | [Bloom](#bloom) | `bloom` | low | off |
 | [Anti-aliasing](#anti-aliasing) | `msaa`/`msaa_samples`, `fxaa` | varies | MSAA 4× on |
 | [Tone mapping & exposure](#tone-mapping--exposure) | `tone_mapping`, `exposure`, `dithering` | free | filmic, exposure 0.0 |
-| [Backend](#backend) | `MUJOFIL_WARP_BACKEND` | — | GL |
+| [Backend](#backend) | `MUJOFIL_BACKEND` | — | GL |
 
 ---
 
@@ -129,9 +129,9 @@ Typical exposure starting points: studio/neutral ~0.0–0.8, dark interior 1.2�
 
 ## Backend
 
-`MUJOFIL_WARP_BACKEND=gl` (default) is the OpenGL single-sync path — fastest, with
+`MUJOFIL_BACKEND=gl` (default) is the OpenGL single-sync path — fastest, with
 sync cost constant in batch size, fully headless via surfaceless EGL.
-`MUJOFIL_WARP_BACKEND=vulkan` is the shared-device path; also headless but its
+`MUJOFIL_BACKEND=vulkan` is the shared-device path; also headless but its
 sync cost grows with N (2-frame in-flight cap). See
 [guide → backends](guide.md#headless--backends).
 

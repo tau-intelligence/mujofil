@@ -1,7 +1,7 @@
-# `mujofil-warp` — GPU MuJoCo (MJWarp) + Filament PBR, zero-copy to PyTorch
+# `mujofil` — GPU MuJoCo (MJWarp) + Filament PBR, zero-copy to PyTorch
 
 The full API. [MJWarp](https://github.com/google-deepmind/mujoco_warp) simulates
-thousands of MuJoCo worlds entirely on the GPU; `mujofil-warp` renders them with
+thousands of MuJoCo worlds entirely on the GPU; `mujofil` renders them with
 Filament PBR and delivers each frame **straight to PyTorch as a `torch.cuda`
 tensor — no GPU→CPU→GPU round-trip**.
 
@@ -27,7 +27,7 @@ tensor — no GPU→CPU→GPU round-trip**.
 ## Install
 
 ```bash
-pip install mujofil-warp
+pip install mujofil
 ```
 
 Runtime requirement: **an NVIDIA GPU + driver ≥ R525 (CUDA 12.0+)**. No CUDA
@@ -35,7 +35,7 @@ toolkit, no Filament, no `mujofil`. You also need `mujoco_warp` and a CUDA build
 of `torch`.
 
 ```python
-from mujofil_warp import WarpRenderer, make_config, QUALITY_PRESETS
+from mujofil import WarpRenderer, make_config, QUALITY_PRESETS
 ```
 
 ---
@@ -48,7 +48,7 @@ the *pixels never leave the GPU*.
 
 ```python
 import mujoco, mujoco_warp as mjw, warp as wp, torch
-from mujofil_warp import WarpRenderer
+from mujofil import WarpRenderer
 
 N = 32
 mjm = mujoco.MjModel.from_xml_path("scene.xml")   # MUST contain a <camera>
@@ -88,7 +88,7 @@ r = WarpRenderer(width=256, batch_size=32, preset="train")
 r = WarpRenderer(width=256, batch_size=32, preset="eval", bloom=True)
 
 # 3. an explicit config
-from mujofil_warp import make_config
+from mujofil import make_config
 r = WarpRenderer(config=make_config(width=256, batch_size=32, exposure=1.6))
 ```
 
@@ -155,7 +155,7 @@ eval_r  = WarpRenderer(width=512, batch_size=8,   preset="eval")   # eval video
 Every fidelity feature is an independent keyword (also usable via `make_config`):
 
 ```python
-from mujofil_warp import WarpRenderer, make_config
+from mujofil import WarpRenderer, make_config
 
 r = WarpRenderer(width=256, batch_size=32,
                  ssao=True, ssao_quality="ultra", ssao_ssct=True,
@@ -224,7 +224,7 @@ warehouse via IBL — invisible on the flat raycaster.
 ## Headless & backends
 
 Both backends run **fully headless** (no X server). Select with
-`MUJOFIL_WARP_BACKEND`:
+`MUJOFIL_BACKEND`:
 
 | Backend | Default | How | Notes |
 |---|---|---|---|
@@ -232,8 +232,8 @@ Both backends run **fully headless** (no X server). Select with
 | **`vulkan`** | | Shared Vulkan device + exportable swapchain + CUDA external-memory import. | Also fully headless. The 2-frame in-flight cap makes its sync cost grow with N. |
 
 ```bash
-MUJOFIL_WARP_BACKEND=gl     python my_train.py     # default, fastest
-MUJOFIL_WARP_BACKEND=vulkan python my_train.py     # force Vulkan
+MUJOFIL_BACKEND=gl     python my_train.py     # default, fastest
+MUJOFIL_BACKEND=vulkan python my_train.py     # force Vulkan
 ```
 
 `gl` auto-falls back to Vulkan only if the GL module can't initialize. For cloud
@@ -267,7 +267,7 @@ RTX 4060 Laptop, env-steps/s (= cameras/s), MJWarp GPU physics → `torch.cuda`.
 
 | | 128px N=512 | 256px N=512 | 256px N=1024 |
 |---|---|---|---|
-| **mujofil-warp (GL)** | **10,675** | **9,949** | **10,628** |
+| **mujofil (GL)** | **10,675** | **9,949** | **10,628** |
 | vanilla `mujoco.Renderer` | 8,394 | 4,808 | 5,021 |
 | **speedup** | **1.27×** | **2.07×** | **2.12×** |
 
@@ -279,7 +279,7 @@ geometry vanilla MuJoCo/MJWarp can't even load): **~3,200 cam/s** at 128px, flat
 from N=64 to N=2048.
 
 **vs MJWarp's own raycaster:** MJWarp scales to ~42,000 cam/s at N=2048 — but
-that's **flat Lambertian on bare objects**. At N≤32 `mujofil-warp` is faster *and*
+that's **flat Lambertian on bare objects**. At N≤32 `mujofil` is faster *and*
 photoreal; at very large N MJWarp wins raw throughput by trading away all visual
 fidelity. Different categories: MJWarp is a parallel raycaster, this is a
 photoreal rasterizer.

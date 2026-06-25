@@ -14,7 +14,7 @@ os.environ.setdefault("VF_MUJOCO_MATERIALS_DIR",
 # Prefer warp's own materials (match the vendored material_manager; the per-world
 # path needs the emissive uniform the installed mujofil 0.1.0 lacks).
 _warp_mats = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                          "mujofil_warp", "materials")
+                          "mujofil", "materials")
 if os.path.isdir(_warp_mats):
     os.environ["VF_MUJOCO_MATERIALS_DIR"] = _warp_mats
 
@@ -34,7 +34,7 @@ SCENE = """
 
 def worker(mode, res, n, iters):
     import numpy as np, torch, mujoco
-    from mujofil_warp import WarpRenderer, RendererConfig
+    from mujofil import WarpRenderer, RendererConfig
     m = mujoco.MjModel.from_xml_string(SCENE)
     datas = [mujoco.MjData(m) for _ in range(n)]
     for i, d in enumerate(datas):

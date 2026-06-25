@@ -54,7 +54,7 @@ def _ibl():
 def worker_warp(res, iters, warmup):
     import mujoco
     import torch
-    from mujofil_warp import WarpRenderer, RendererConfig
+    from mujofil import WarpRenderer, RendererConfig
 
     m = mujoco.MjModel.from_xml_string(SCENE)
     d = mujoco.MjData(m); mujoco.mj_forward(m, d)

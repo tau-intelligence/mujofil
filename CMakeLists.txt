@@ -38,7 +38,7 @@ add_link_options(-stdlib=libc++)
 set(FILAMENT_VERSION "1.56.3")
 # Prebuilt EGL Filament artifact (overridable). Empty disables the download step.
 set(MUJOFIL_WARP_FILAMENT_URL
-    "https://github.com/tau-intelligence/mujofil-warp/releases/download/filament-egl-v${FILAMENT_VERSION}/filament-egl-v${FILAMENT_VERSION}-linux-x86_64.tgz"
+    "https://github.com/tau-intelligence/mujofil/releases/download/filament-egl-v${FILAMENT_VERSION}/filament-egl-v${FILAMENT_VERSION}-linux-x86_64.tgz"
     CACHE STRING "URL of the prebuilt EGL-enabled Filament artifact")
 if(NOT FILAMENT_DIR)
     set(FILAMENT_DIR "$ENV{FILAMENT_DIR}")
@@ -194,7 +194,7 @@ function(add_warp_backend tgt module_name renderer_src extra_inc extra_libs)
         OUTPUT_NAME ${module_name}
         INSTALL_RPATH "$ORIGIN"
         BUILD_WITH_INSTALL_RPATH ON)
-    install(TARGETS ${tgt} DESTINATION mujofil_warp)
+    install(TARGETS ${tgt} DESTINATION mujofil)
 endfunction()
 
 # OpenGL single-sync backend (default) — headless via surfaceless EGL (no X).
@@ -209,18 +209,18 @@ add_warp_backend(_mujofil_warp _mujofil_warp
 
 # ============================================================================
 # Package data: compiled Filament materials (loaded via VF_MUJOCO_MATERIALS_DIR,
-# which mujofil_warp/__init__.py points at this install dir).
+# which mujofil/__init__.py points at this install dir).
 # ============================================================================
-file(GLOB PREBUILT_MATERIALS "${CMAKE_SOURCE_DIR}/mujofil_warp/materials/*.filamat")
+file(GLOB PREBUILT_MATERIALS "${CMAKE_SOURCE_DIR}/mujofil/materials/*.filamat")
 if(PREBUILT_MATERIALS)
-    install(FILES ${PREBUILT_MATERIALS} DESTINATION mujofil_warp/materials)
+    install(FILES ${PREBUILT_MATERIALS} DESTINATION mujofil/materials)
 endif()
 
 # Layered (gl_Layer) material set for the parallel-batch / egocentric path. These
 # are compiled with the FORKED matc (-g) so they carry the gl_Layer write + the
 # textured_pbr normal/MR/emissive maps; ship them alongside the standard set
-# (mujofil_warp/__init__.py points VF_MUJOCO_MATERIALS_DIR here when layered=True).
-file(GLOB PREBUILT_MATERIALS_LAYERED "${CMAKE_SOURCE_DIR}/mujofil_warp/materials_layered/*.filamat")
+# (mujofil/__init__.py points VF_MUJOCO_MATERIALS_DIR here when layered=True).
+file(GLOB PREBUILT_MATERIALS_LAYERED "${CMAKE_SOURCE_DIR}/mujofil/materials_layered/*.filamat")
 if(PREBUILT_MATERIALS_LAYERED)
-    install(FILES ${PREBUILT_MATERIALS_LAYERED} DESTINATION mujofil_warp/materials_layered)
+    install(FILES ${PREBUILT_MATERIALS_LAYERED} DESTINATION mujofil/materials_layered)
 endif()

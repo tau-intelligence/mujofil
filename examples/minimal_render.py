@@ -1,6 +1,6 @@
-"""Minimal mujofil-warp example: N MuJoCo worlds -> photoreal frames on torch.cuda.
+"""Minimal mujofil example: N MuJoCo worlds -> photoreal frames on torch.cuda.
 
-You only import ``mujofil_warp``. ``ParallelScene`` drives MuJoCo Warp (GPU MuJoCo)
+You only import ``mujofil``. ``ParallelScene`` drives MuJoCo Warp (GPU MuJoCo)
 for the physics and this package's Filament renderer for the pixels, handing each
 batch of observations back as a zero-copy ``torch.cuda`` tensor.
 
@@ -14,7 +14,7 @@ Run::
 
 The default GL backend does a true single-sync batch and needs an X display
 (it auto-falls back to Vulkan when none is available). Force a backend with
-MUJOFIL_WARP_BACKEND=gl|vulkan. Both deliver frames as zero-copy torch.cuda tensors.
+MUJOFIL_BACKEND=gl|vulkan. Both deliver frames as zero-copy torch.cuda tensors.
 """
 from __future__ import annotations
 
@@ -23,8 +23,8 @@ import time
 
 import torch
 
-import mujofil_warp
-from mujofil_warp import QUALITY_PRESETS
+import mujofil
+from mujofil import QUALITY_PRESETS
 
 SCENE = """
 <mujoco>
@@ -56,7 +56,7 @@ def main():
     args = ap.parse_args()
 
     # One object: GPU physics (MuJoCo Warp) + photoreal rendering (Filament).
-    scene = mujofil_warp.ParallelScene(
+    scene = mujofil.ParallelScene(
         SCENE, num_worlds=args.n, width=args.res, height=args.res, preset=args.preset)
 
     for _ in range(5):  # warmup (the first MuJoCo Warp step JIT-compiles)

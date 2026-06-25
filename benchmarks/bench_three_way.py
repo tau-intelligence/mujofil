@@ -128,7 +128,7 @@ def worker_mjwarp(scene, res, iters, warmup, nworld):
 
 def worker_layered(scene, res, iters, warmup, nworld):
     import mujoco, torch
-    from mujofil_warp import WarpRenderer, RendererConfig
+    from mujofil import WarpRenderer, RendererConfig
     m = _load_model(scene)
     datas = _make_datas(m, nworld)
     cfg = RendererConfig(); cfg.width = cfg.height = res

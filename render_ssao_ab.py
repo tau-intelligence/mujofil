@@ -59,9 +59,9 @@ def _warehouse(rr):
 def worker(effects, out_path):
     import mujofil
     os.environ.setdefault("VF_MUJOCO_MATERIALS_DIR",
-                          os.path.join(HERE, "mujofil_warp", "materials"))
+                          os.path.join(HERE, "mujofil", "materials"))
     import numpy as np, mujoco, torch  # noqa
-    from mujofil_warp import WarpRenderer, RendererConfig
+    from mujofil import WarpRenderer, RendererConfig
     on = effects == "on"
     cfg = RendererConfig()
     cfg.width, cfg.height = 1200, 900
@@ -115,7 +115,7 @@ def main():
         env = dict(os.environ)
         env["MUJOFIL_WARP_BACKEND"] = "gl"
         env["PYTHONPATH"] = HERE + os.pathsep + env.get("PYTHONPATH", "")
-        env["VF_MUJOCO_MATERIALS_DIR"] = os.path.join(HERE, "mujofil_warp", "materials")
+        env["VF_MUJOCO_MATERIALS_DIR"] = os.path.join(HERE, "mujofil", "materials")
         r = subprocess.run([sys.executable, os.path.abspath(__file__), "--worker", eff, out],
                            capture_output=True, text=True, env=env, cwd=HERE)
         ok = os.path.exists(out)

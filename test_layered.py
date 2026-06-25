@@ -15,7 +15,7 @@ os.environ.setdefault("VF_MUJOCO_MATERIALS_DIR",
 import numpy as np
 import torch
 import mujoco
-from mujofil_warp import WarpRenderer, RendererConfig
+from mujofil import WarpRenderer, RendererConfig
 
 SCENE = """
 <mujoco>

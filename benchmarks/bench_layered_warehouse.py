@@ -14,7 +14,7 @@ import subprocess
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import mujofil
 _warp_mats = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                          "mujofil_warp", "materials")
+                          "mujofil", "materials")
 if os.path.isdir(_warp_mats):
     os.environ["VF_MUJOCO_MATERIALS_DIR"] = _warp_mats
 
@@ -54,7 +54,7 @@ def _warehouse(r):
 
 def worker(mode, res, n, iters):
     import numpy as np, torch, mujoco
-    from mujofil_warp import WarpRenderer, RendererConfig
+    from mujofil import WarpRenderer, RendererConfig
     m = mujoco.MjModel.from_xml_string(SCENE)
     datas = [mujoco.MjData(m) for _ in range(n)]
     for i, d in enumerate(datas):

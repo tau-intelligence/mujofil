@@ -2,7 +2,7 @@
 import os, json, time, sys
 import mujoco, torch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from mujofil_warp import WarpRenderer, RendererConfig
+from mujofil import WarpRenderer, RendererConfig
 
 WH = "/home/mumuksh/Visual-Fidelity-Mujoco/warehouse/data"
 A = os.path.join(WH, "assets")

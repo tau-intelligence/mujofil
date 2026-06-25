@@ -18,7 +18,7 @@ os.environ.setdefault("VF_MUJOCO_MATERIALS_DIR",
                       os.path.join(os.path.dirname(mujofil.__file__), "materials"))
 # Prefer warp's own materials (match the vendored material_manager).
 _warp_mats = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
-                          "mujofil_warp", "materials")
+                          "mujofil", "materials")
 if os.path.isdir(_warp_mats):
     os.environ["VF_MUJOCO_MATERIALS_DIR"] = os.path.abspath(_warp_mats)
 
@@ -61,7 +61,7 @@ def run_worker(n, res, iters):
     import numpy as np
     import torch  # noqa: F401  (DLPack consumer)
     import mujoco
-    from mujofil_warp import WarpRenderer, RendererConfig
+    from mujofil import WarpRenderer, RendererConfig
 
     m = mujoco.MjModel.from_xml_string(SCENE)
     datas = [mujoco.MjData(m) for _ in range(n)]

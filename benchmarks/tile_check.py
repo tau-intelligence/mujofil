@@ -14,7 +14,7 @@ import os, sys, json, subprocess, itertools
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, HERE)
-_wm = os.path.join(HERE, "mujofil_warp", "materials")
+_wm = os.path.join(HERE, "mujofil", "materials")
 if os.path.isdir(_wm):
     os.environ.setdefault("VF_MUJOCO_MATERIALS_DIR", _wm)
 
@@ -54,7 +54,7 @@ OBJ_XML = """
 
 def worker(key, kind, target, ibl_i, ibl_s, n, res):
     import numpy as np, torch, mujoco
-    from mujofil_warp import WarpRenderer, RendererConfig
+    from mujofil import WarpRenderer, RendererConfig
     from PIL import Image
 
     if kind == "mjcf":

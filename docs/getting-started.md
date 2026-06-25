@@ -3,7 +3,7 @@
 From nothing to a zero-copy `torch.cuda` render.
 
 > ### Running normal CPU MuJoCo?
-> This page covers **`mujofil-warp`** (GPU MJWarp physics → `torch.cuda` frames).
+> This page covers **`mujofil`** (GPU MJWarp physics → `torch.cuda` frames).
 > If you step physics with `mujoco.mj_step` on the CPU and want **NumPy** frames,
 > use the CPU edition,
 > **[`mujofil`](https://github.com/tau-intelligence/MuJoCo-Filament)**, instead.
@@ -12,7 +12,7 @@ From nothing to a zero-copy `torch.cuda` render.
 
 ## 1. Is this the right package?
 
-Use **`mujofil-warp`** when you simulate **thousands of worlds on the GPU** with
+Use **`mujofil`** when you simulate **thousands of worlds on the GPU** with
 [MJWarp](https://github.com/google-deepmind/mujoco_warp) (`mujoco_warp`) and want
 observations delivered straight to PyTorch as CUDA tensors with no CPU copy.
 
@@ -25,7 +25,7 @@ NumPy frames. You can install both; they don't conflict.
 ## 2. Install
 
 ```bash
-pip install mujofil-warp
+pip install mujofil
 ```
 
 The wheel is **self-contained**: Filament and the CUDA runtime are statically
@@ -69,7 +69,7 @@ host `MjData` → render → get a `torch.cuda` tensor.**
 
 ```python
 import mujoco, mujoco_warp as mjw, warp as wp, torch
-from mujofil_warp import WarpRenderer
+from mujofil import WarpRenderer
 
 N = 32
 mjm = mujoco.MjModel.from_xml_path("scene.xml")   # MUST contain a <camera>

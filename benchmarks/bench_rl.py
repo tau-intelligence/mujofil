@@ -112,7 +112,7 @@ def worker_mujoco(res, n, steps, warmup):
 
 def worker_ours(res, n, steps, warmup):
     import numpy as np, mujoco, torch
-    from mujofil_warp import WarpRenderer, RendererConfig
+    from mujofil import WarpRenderer, RendererConfig
     m = mujoco.MjModel.from_xml_string(SCENE)
     datas = [mujoco.MjData(m) for _ in range(n)]
     for d in datas: mujoco.mj_forward(m, d)

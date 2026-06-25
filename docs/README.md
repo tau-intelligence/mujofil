@@ -1,8 +1,8 @@
-# mujofil-warp Documentation
+# mujofil Documentation
 
 **Photoreal PBR rendering for GPU-resident MuJoCo ([MJWarp](https://github.com/google-deepmind/mujoco_warp)),
 zero-copy to PyTorch.** MJWarp simulates thousands of parallel worlds on the GPU;
-`mujofil-warp` renders them with [Google Filament](https://github.com/google/filament)'s
+`mujofil` renders them with [Google Filament](https://github.com/google/filament)'s
 physically-based renderer and delivers each frame **straight to PyTorch as a
 `torch.cuda` tensor — no GPU→CPU→GPU bounce**.
 
@@ -50,7 +50,7 @@ flowchart LR
 
 MJWarp ships a batch renderer, but it's a deliberately **low-fidelity single-hit
 raycaster**: flat Lambertian, no PBR / IBL / reflections, and it **cannot load
-GLB** environments. `mujofil-warp` is the photoreal alternative for the same
+GLB** environments. `mujofil` is the photoreal alternative for the same
 GPU-resident physics — and at small-to-moderate batch sizes it's also *faster*
 (see [Performance](guide.md#performance)).
 
@@ -64,4 +64,4 @@ GPU-resident physics — and at small-to-moderate batch sizes it's also *faster*
 - Linux x86-64, glibc ≥ 2.34, Python 3.10–3.13. Both backends run **fully
   headless** (no X server).
 
-> Documented for `mujofil-warp` 0.1.2.
+> Documented for `mujofil` 0.1.2.

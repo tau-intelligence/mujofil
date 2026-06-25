@@ -49,7 +49,7 @@ def _warehouse(rr):
 
 def worker(res, n, iters):
     import numpy as np, mujoco, torch  # noqa: F401
-    from mujofil_warp import WarpRenderer, RendererConfig
+    from mujofil import WarpRenderer, RendererConfig
     mjm = mujoco.MjModel.from_xml_string(SCENE)
     host = [mujoco.MjData(mjm) for _ in range(n)]
     rng = np.random.default_rng(0)

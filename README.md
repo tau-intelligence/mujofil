@@ -1,10 +1,10 @@
-# mujofil-warp
+# mujofil
 
 **A GPU simulation pipeline for vision-based RL: MuJoCo Warp physics + a parallel,
 high-fidelity rasterization renderer (forked from Google Filament), zero-copy to
 PyTorch.**
 
-`mujofil-warp` builds an **efficient, GPU-parallel rasterization render engine**
+`mujofil` builds an **efficient, GPU-parallel rasterization render engine**
 (a fork of [Google Filament](https://github.com/google/filament) — PBR materials,
 image-based lighting, soft shadows, SSAO, reflections) and wires it into a complete
 simulation pipeline: it plugs
@@ -23,7 +23,7 @@ with no CPU round-trip** for the pixels.
   load.
 - **Photoreal vision observations** (PBR, IBL, reflections) at parallel-batch
   throughput, so the renderer keeps up with GPU physics instead of bottlenecking it.
-- **One import.** Your code only ever imports `mujofil_warp`; it drives the
+- **One import.** Your code only ever imports `mujofil`; it drives the
   MuJoCo Warp physics and the renderer for you.
 
 > **Positioning, honestly:** the physics is MuJoCo Warp (DeepMind + NVIDIA's GPU
@@ -61,7 +61,7 @@ All numbers are env-steps/s (= cameras/s), MJWarp GPU physics → `torch.cuda`.
 
 | | 128px N=512 | 256px N=512 | 256px N=1024 |
 |---|---|---|---|
-| **mujofil-warp (GL)** | **10,675** | **9,949** | **10,628** |
+| **mujofil (GL)** | **10,675** | **9,949** | **10,628** |
 | vanilla `mujoco.Renderer` | 8,394 | 4,808 | 5,021 |
 | **speedup** | **1.27×** | **2.07×** | **2.12×** |
 
@@ -78,20 +78,20 @@ where the Vulkan path's grows linearly with batch size.
 
 **vs MJWarp's own raycaster:** MJWarp scales to ~42,000 cam/s at N=2048 — but that
 is **flat Lambertian on bare objects** (no PBR/IBL, no GLB environments). At small
-N (≤32) `mujofil-warp` is faster *and* photoreal; at large N MJWarp wins raw
+N (≤32) `mujofil` is faster *and* photoreal; at large N MJWarp wins raw
 throughput by trading away all visual fidelity. Different categories: MJWarp is a
 parallel raycaster, this is a photoreal rasterizer.
 
 ## Quickstart
 
-You only import `mujofil_warp`. `ParallelScene` runs the GPU physics (MuJoCo Warp)
+You only import `mujofil`. `ParallelScene` runs the GPU physics (MuJoCo Warp)
 and renders every world to a zero-copy `torch.cuda` tensor — no `put_model` /
 `make_data` / host-copy boilerplate:
 
 ```python
-import mujofil_warp
+import mujofil
 
-scene = mujofil_warp.ParallelScene("scene.xml", num_worlds=32,
+scene = mujofil.ParallelScene("scene.xml", num_worlds=32,
                                    width=256, height=256, preset="high")
 
 for _ in range(100):
@@ -111,7 +111,7 @@ directly with `WarpRenderer`:
 
 ```python
 import mujoco, mujoco_warp as mjw, warp as wp
-from mujofil_warp import WarpRenderer
+from mujofil import WarpRenderer
 
 mjm = mujoco.MjModel.from_xml_path("scene.xml")
 M = mjw.put_model(mjm)
@@ -137,7 +137,7 @@ Every fidelity feature is an independent toggle so you can reproduce the
 throughput/fidelity trade-offs in `benchmarks/` on your own hardware:
 
 ```python
-from mujofil_warp import WarpRenderer, make_config
+from mujofil import WarpRenderer, make_config
 
 # keyword toggles
 r = WarpRenderer(width=256, batch_size=32, ssao=False, shadows=True, msaa=True)
@@ -170,7 +170,7 @@ tracing), `fast` (SSAO off, ~2×), `ultra` (8× MSAA + bloom), `raw` (no AO/shad
 
 ## Backends
 
-Select at runtime with `MUJOFIL_WARP_BACKEND`:
+Select at runtime with `MUJOFIL_BACKEND`:
 
 - **`gl`** (default) — OpenGL single-sync. Renders N worlds into N imported GL
   textures bracketed by one `flushAndWait`, then exports via GL↔CUDA interop. Sync
@@ -182,14 +182,14 @@ Select at runtime with `MUJOFIL_WARP_BACKEND`:
 
 ```bash
 # default is gl; force a backend explicitly with the env var:
-MUJOFIL_WARP_BACKEND=gl     python examples/minimal_render.py --preset high
-MUJOFIL_WARP_BACKEND=vulkan python examples/minimal_render.py --preset high
+MUJOFIL_BACKEND=gl     python examples/minimal_render.py --preset high
+MUJOFIL_BACKEND=vulkan python examples/minimal_render.py --preset high
 ```
 
 ## Installation
 
 ```bash
-pip install mujofil-warp
+pip install mujofil
 ```
 
 The wheel is **self-contained**: Filament and the CUDA runtime are statically
@@ -214,7 +214,7 @@ non-NVIDIA GPUs. These need a from-source Filament build (planned).
 
 ### PyTorch (zero-copy target)
 
-`torch` is an **optional** dependency (`pip install "mujofil-warp[torch]"`), and
+`torch` is an **optional** dependency (`pip install "mujofil[torch]"`), and
 **you must install a build that matches your GPU's compute capability** — the
 zero-copy DLPack handoff runs CUDA kernels through your torch, not ours.
 
@@ -241,7 +241,7 @@ GL auto-falls back to Vulkan only if the GL module fails to initialize.
 
 ### Building from source
 
-Most users never need this — `pip install mujofil-warp` ships prebuilt wheels.
+Most users never need this — `pip install mujofil` ships prebuilt wheels.
 Build from source only to hack on the C++ or target an unsupported environment.
 
 **Prerequisites** (the native modules and Filament are built with Clang + libc++):
@@ -256,8 +256,8 @@ Build from source only to hack on the C++ or target an unsupported environment.
 Then:
 
 ```bash
-git clone https://github.com/tau-intelligence/mujofil-warp
-cd mujofil-warp
+git clone https://github.com/tau-intelligence/mujofil
+cd mujofil
 CC=clang CXX=clang++ pip install .
 ```
 
@@ -295,11 +295,11 @@ bash native/build.sh      # Vulkan zero-copy                  -> _mujofil_warp
 
 ## Architecture & porting
 
-`mujofil-warp` is **one core with pluggable rendering backends**, so new platforms
+`mujofil` is **one core with pluggable rendering backends**, so new platforms
 are added as a backend — not a fork.
 
 ```
-mujofil_warp/__init__.py     Python API, presets, backend selection   (shared)
+mujofil/__init__.py     Python API, presets, backend selection   (shared)
 native/render_module.cpp     pybind bindings, batching                (shared)
 native/vendor/core/          scene / material / light bridge          (shared)
 native/renderer_gl.cpp       Linux: surfaceless EGL  + CUDA interop   (backend)
@@ -323,7 +323,7 @@ validate on), but the codebase is structured so they slot in without a fork.
 ## Layout
 
 ```
-mujofil_warp/        Python package (WarpRenderer, make_config, presets)
+mujofil/        Python package (WarpRenderer, make_config, presets)
 native/              C++ renderer + pybind module + build scripts
   renderer_gl.cpp      OpenGL single-sync zero-copy backend
   renderer_warp.cpp    Vulkan shared-device zero-copy backend
@@ -336,10 +336,10 @@ docs/ARCHITECTURE.md design + phased integration plan
 
 ## Relationship to `mujofil`
 
-`mujofil-warp` reuses the CPU-MuJoCo `mujofil` renderer's scene/material/light
+`mujofil` reuses the CPU-MuJoCo `mujofil` renderer's scene/material/light
 source but is a **separate build** — the published `mujofil` package is untouched.
 Use `mujofil` for high-fidelity CPU-MuJoCo vector-env rendering; use
-`mujofil-warp` when you want MJWarp's GPU-resident physics with photoreal,
+`mujofil` when you want MJWarp's GPU-resident physics with photoreal,
 zero-copy observations.
 
 ## License

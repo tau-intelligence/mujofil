@@ -11,13 +11,13 @@ import json
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mujofil
-_warp_mats = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mujofil_warp", "materials")
+_warp_mats = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mujofil", "materials")
 os.environ.setdefault("VF_MUJOCO_MATERIALS_DIR", _warp_mats)
 
 import numpy as np
 import torch
 import mujoco
-from mujofil_warp import WarpRenderer, RendererConfig
+from mujofil import WarpRenderer, RendererConfig
 
 WH = "/home/mumuksh/Visual-Fidelity-Mujoco/warehouse/data"
 A = os.path.join(WH, "assets")

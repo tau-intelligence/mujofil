@@ -77,7 +77,7 @@ jobs:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     environment:
       name: pypi
-      url: https://pypi.org/project/mujofil-warp/
+      url: https://pypi.org/project/mujofil/
     permissions:
       id-token: write   # OIDC Trusted Publishing -- no API token needed.
     steps:

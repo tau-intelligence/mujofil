@@ -32,7 +32,7 @@ SCENE = """<mujoco>
 
 def worker(res, n, steps, cfgkw):
     import numpy as np, mujoco
-    from mujofil_warp import WarpRenderer, RendererConfig
+    from mujofil import WarpRenderer, RendererConfig
     m = mujoco.MjModel.from_xml_string(SCENE)
     datas = [mujoco.MjData(m) for _ in range(n)]
     for d in datas:

@@ -83,7 +83,7 @@ def worker(kind, res, n, walls, steps, warm):
             loss = net(x).pow(2).mean(); opt.zero_grad(True); loss.backward(); opt.step()
             torch.cuda.synchronize(); return ts, tr, time.perf_counter() - t
     else:
-        from mujofil_warp import WarpRenderer
+        from mujofil import WarpRenderer
         preset = kind  # "eval" or "train"
         r = WarpRenderer(width=res, height=res, batch_size=n, preset=preset)
         r.load_model(m)

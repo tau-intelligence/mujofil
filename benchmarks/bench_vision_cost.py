@@ -146,7 +146,7 @@ def worker_ours_rgb(res, iters, warmup, nworld):
     host-copy so the cost is honest (the pixels are zero-copy, the transforms
     are not -- yet)."""
     import mujoco, mujoco_warp as mjw, warp as wp, torch
-    from mujofil_warp import WarpRenderer
+    from mujofil import WarpRenderer
     mjm = _model()
     ngeom = mjm.ngeom
     m = mjw.put_model(mjm)
@@ -179,7 +179,7 @@ def worker_ours_layered(res, iters, warmup, nworld):
     draw (effects off in the objects pass, shared/view-folded camera). The
     high-throughput path, zero-copy to torch.cuda."""
     import mujoco, mujoco_warp as mjw, warp as wp, torch
-    from mujofil_warp import WarpRenderer, RendererConfig
+    from mujofil import WarpRenderer, RendererConfig
     mjm = _model()
     ngeom = mjm.ngeom
     m = mjw.put_model(mjm)

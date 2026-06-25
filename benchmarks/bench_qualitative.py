@@ -18,7 +18,7 @@ import mujoco
 import mujoco_warp as mjw
 import warp as wp
 
-from mujofil_warp import WarpRenderer, RendererConfig
+from mujofil import WarpRenderer, RendererConfig
 
 WH = "/home/mumuksh/Visual-Fidelity-Mujoco/warehouse/data"
 ASSETS = os.path.join(WH, "assets")

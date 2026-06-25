@@ -19,14 +19,14 @@ os.environ.setdefault("MUJOFIL_WARP_BACKEND", "gl")
 HERE = "/home/mumuksh/mujofil-warp"
 VFM = "/home/mumuksh/Visual-Fidelity-Mujoco"
 os.environ.setdefault("VF_MUJOCO_MATERIALS_DIR",
-                      os.path.join(HERE, "mujofil_warp", "materials"))
+                      os.path.join(HERE, "mujofil", "materials"))
 sys.path.insert(0, HERE)
 sys.path.insert(0, VFM)
 
 import numpy as np
 import mujoco
 from PIL import Image
-from mujofil_warp import WarpRenderer, RendererConfig
+from mujofil import WarpRenderer, RendererConfig
 from trailer.scenes import SCENES
 
 OUT = os.path.join(HERE, "site_assets", "img")
@@ -41,8 +41,8 @@ VIEWS = {
         ((6.5, -2.0, 2.0), (-6.0, 1.0, 1.8)),
     ],
     "living": [
-        ((-3.0, 2.4, 1.45), (0.6, -0.6, 0.7)),
-        ((2.6, 2.7, 1.5), (-1.1, -0.9, 0.6)),
+        ((1.9, 1.7, 1.4), (-0.9, 0.4, 0.6)),
+        ((2.5, -1.6, 1.4), (-1.0, 0.6, 0.6)),
     ],
     "cafe": [
         ((-3.0, 2.8, 1.5), (0.6, -0.8, 0.85)),
@@ -105,6 +105,37 @@ def render_scene(scene, w=1280, h=800):
     r.close()
 
 
+def render_scene_wide(scene, view, w=2520, h=1080, name=None):
+    """Render ONE view of a scene at a wide (21:9) aspect for a full-bleed hero
+    background. ``view`` = (eye xyz, look xyz) relative to the GLB origin."""
+    s = SCENES[scene]
+    xform = [float(x) for x in s["xform"]]
+    cx, cy = xform[12], xform[13]
+    m = mujoco.MjModel.from_xml_string(EMPTY)
+    cfg = RendererConfig()
+    cfg.width, cfg.height = w, h
+    cfg.batch_size = 1
+    cfg.enable_shadows = True
+    cfg.enable_ssao = True
+    cfg.enable_bloom = True
+    cfg.exposure = float(s.get("exposure", 0.6))
+    r = WarpRenderer(cfg)
+    r.load_model(m)
+    ii, ss = ibl_paths(s.get("ibl", "studio_ibl"))
+    if os.path.exists(ii):
+        r.load_ibl(ii, ss)
+    r.set_ambient_intensity(float(s.get("ambient", 8000.0)) * 1.5)
+    r.load_glb_xform(s["glb"], xform)
+    eye, look = view
+    r.set_free_camera(cx + eye[0], cy + eye[1], eye[2],
+                      cx + look[0], cy + look[1], look[2])
+    img = r.render()[..., :3].clamp(0, 255).byte().cpu().numpy()
+    path = os.path.join(OUT, f"{name or scene}_wide.png")
+    Image.fromarray(img).save(path)
+    print(f"  saved {path}  ({w}x{h}, bright={img.mean():.0f})")
+    r.close()
+
+
 def render_warehouse(w=1280, h=800):
     import json
     m = mujoco.MjModel.from_xml_string(EMPTY)
@@ -141,7 +172,13 @@ def render_warehouse(w=1280, h=800):
 
 
 def main():
-    scenes = sys.argv[1:] or (list(VIEWS) + ["warehouse"])
+    args = sys.argv[1:]
+    if args and args[0] == "wide":
+        # Wide 21:9 Sponza hero background.
+        render_scene_wide("sponza", ((-10.5, 0.0, 2.2), (6.0, 0.2, 1.5)),
+                          name="sponza_hero")
+        return
+    scenes = args or (list(VIEWS) + ["warehouse"])
     for sc in scenes:
         print(f"### {sc} ###")
         try:
