@@ -57,3 +57,4 @@ _filament_egl/
 # locally-copied native modules (CI/CMake builds them into the wheel)
 mujofil_warp/*.so
 native/vendor/core/renderer.cpp
+_site/
