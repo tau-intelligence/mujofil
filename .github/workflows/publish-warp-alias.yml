@@ -1,0 +1,39 @@
+name: Publish mujofil-warp alias
+
+# Publishes the dependency-only `mujofil-warp` alias package (packaging/warp-alias)
+# to PyPI. It contains no code -- it just depends on `mujofil` -- so a fresh
+# `pip install mujofil-warp` redirects to the renamed package. Pure-Python, no
+# compilation. Triggered by pushing a tag like `warp-alias-v0.2.0`.
+
+on:
+  push:
+    tags:
+      - "warp-alias-v*"
+  workflow_dispatch:
+
+jobs:
+  publish-alias:
+    name: Build and publish alias
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/mujofil-warp/
+    permissions:
+      id-token: write   # OIDC Trusted Publishing -- no API token needed.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build sdist + wheel
+        run: |
+          python -m pip install --upgrade build
+          python -m build packaging/warp-alias --outdir dist
+      - name: Check
+        run: |
+          python -m pip install --upgrade twine
+          python -m twine check dist/*
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
