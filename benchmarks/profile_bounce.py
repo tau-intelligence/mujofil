@@ -7,7 +7,7 @@ per-world host-MjData write loop) | render (batched PBR -> torch.cuda).
 Run:
   systemd-run --user -p LimitAS=infinity --quiet --wait --pipe -- \
     bash -c 'cd ~/mujofil-warp && source .venv/bin/activate && \
-      PYTHONPATH=$PWD MUJOFIL_WARP_BACKEND=gl python benchmarks/profile_bounce.py'
+      PYTHONPATH=$PWD MUJOFIL_BACKEND=gl python benchmarks/profile_bounce.py'
 """
 import os
 import sys

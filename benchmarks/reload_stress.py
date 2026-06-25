@@ -3,7 +3,7 @@ close -- in one process, watching GPU memory. Catches texture/instance leaks on
 the GLB-ingest + float16 path (sponza has 100s of textures, the worst case).
 """
 import os, sys
-os.environ.setdefault("MUJOFIL_WARP_BACKEND", "gl")
+os.environ.setdefault("MUJOFIL_BACKEND", "gl")
 HERE = "/home/mumuksh/mujofil-warp"; VFM = "/home/mumuksh/Visual-Fidelity-Mujoco"
 os.environ.setdefault("VF_MUJOCO_MATERIALS_DIR", os.path.join(HERE, "mujofil", "materials"))
 sys.path.insert(0, HERE); sys.path.insert(0, VFM)

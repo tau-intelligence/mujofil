@@ -2,7 +2,7 @@
 objects in ONE instanced GPU pass. Saves a montage to eyeball whether the GLB
 backdrop appears in every layer, and reports throughput.
 
-  MUJOFIL_WARP_BACKEND=gl python test_layered_warehouse.py [N]
+  MUJOFIL_BACKEND=gl python test_layered_warehouse.py [N]
 """
 import os
 import sys

@@ -118,7 +118,7 @@ def worker_mjwarp(res, iters, warmup, n):
 
 
 def worker_mujofil(res, iters, warmup, n, use_glb):
-    os.environ.setdefault("MUJOFIL_WARP_BACKEND", "gl")
+    os.environ.setdefault("MUJOFIL_BACKEND", "gl")
     os.environ.setdefault("VF_MUJOCO_MATERIALS_DIR", os.path.join(HERE, "mujofil", "materials"))
     sys.path.insert(0, HERE); sys.path.insert(0, VFM)
     import mujoco, torch
@@ -151,7 +151,7 @@ def worker_mujofil_layered(res, iters, warmup, n, scene_key):
     """Full-PBR HIGH-FIDELITY path: GLB environment ingested into the instanced
     LAYERED renderables (albedo+normal+MR+emissive maps) -> N egocentric views in
     ONE instanced draw."""
-    os.environ.setdefault("MUJOFIL_WARP_BACKEND", "gl")
+    os.environ.setdefault("MUJOFIL_BACKEND", "gl")
     os.environ.setdefault("VF_MUJOCO_MATERIALS_DIR", os.path.join(HERE, "mujofil", "materials"))
     sys.path.insert(0, HERE); sys.path.insert(0, VFM)
     import mujoco, torch
@@ -199,7 +199,7 @@ def run_child():
 
 def _child(which, res, n):
     cmd = (f"cd {HERE} && source .venv/bin/activate && "
-           f"PYTHONPATH={HERE} MUJOFIL_WARP_BACKEND=gl MUJOCO_GL=egl "
+           f"PYTHONPATH={HERE} MUJOFIL_BACKEND=gl MUJOCO_GL=egl "
            f"python benchmarks/ego_vs_baselines.py --child {which} {res} {n}")
     full = ["systemd-run", "--user", "-p", "LimitAS=infinity", "--quiet", "--wait",
             "--pipe", "--", "bash", "-c", cmd]

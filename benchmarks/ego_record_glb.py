@@ -13,7 +13,7 @@ circular path inside the room, carrying a forward-facing onboard camera. Each ti
 is that robot's eye view of the real environment. Stepped over time -> animated GIF.
 """
 import os, sys
-os.environ.setdefault("MUJOFIL_WARP_BACKEND", "gl")
+os.environ.setdefault("MUJOFIL_BACKEND", "gl")
 HERE = "/home/mumuksh/mujofil-warp"
 VFM = "/home/mumuksh/Visual-Fidelity-Mujoco"
 os.environ.setdefault("VF_MUJOCO_MATERIALS_DIR", os.path.join(HERE, "mujofil", "materials"))

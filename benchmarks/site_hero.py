@@ -10,12 +10,12 @@ Run (uncapped address space for CUDA):
   systemd-run --user -p LimitAS=infinity --quiet --wait --pipe -- \
     bash -c 'cd ~/mujofil-warp && source .venv/bin/activate && \
       PYTHONPATH=$PWD:/home/mumuksh/Visual-Fidelity-Mujoco \
-      MUJOFIL_WARP_BACKEND=gl python benchmarks/site_hero.py'
+      MUJOFIL_BACKEND=gl python benchmarks/site_hero.py'
 """
 import os
 import sys
 
-os.environ.setdefault("MUJOFIL_WARP_BACKEND", "gl")
+os.environ.setdefault("MUJOFIL_BACKEND", "gl")
 HERE = "/home/mumuksh/mujofil-warp"
 VFM = "/home/mumuksh/Visual-Fidelity-Mujoco"
 os.environ.setdefault("VF_MUJOCO_MATERIALS_DIR",

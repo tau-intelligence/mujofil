@@ -3,7 +3,7 @@ that per-world objects composite over it. Saves a hero + montage per scene with 
 properly-framed eye-level camera derived from the scene's WORLD bounds.
 """
 import os, sys, json
-os.environ.setdefault("MUJOFIL_WARP_BACKEND", "gl")
+os.environ.setdefault("MUJOFIL_BACKEND", "gl")
 HERE = "/home/mumuksh/mujofil-warp"
 os.environ.setdefault("VF_MUJOCO_MATERIALS_DIR", os.path.join(HERE, "mujofil", "materials"))
 sys.path.insert(0, HERE)

@@ -5,7 +5,7 @@ while KEEPING gltfio full PBR + FILMIC tonemap (so it stays photoreal, NOT flat
 like layered). Measure cam/s per config + save a quality montage of the fast one.
 """
 import os, sys, time
-os.environ.setdefault("MUJOFIL_WARP_BACKEND", "gl")
+os.environ.setdefault("MUJOFIL_BACKEND", "gl")
 HERE = "/home/mumuksh/mujofil-warp"; VFM = "/home/mumuksh/Visual-Fidelity-Mujoco"
 os.environ.setdefault("VF_MUJOCO_MATERIALS_DIR", os.path.join(HERE, "mujofil", "materials"))
 sys.path.insert(0, HERE); sys.path.insert(0, VFM)

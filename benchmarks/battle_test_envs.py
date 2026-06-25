@@ -14,7 +14,7 @@ panic in one scene can't take down the rest). A case PASSES when:
   * the renderer closes + reloads WITHOUT aborting (teardown is exercised here;
     os._exit would otherwise hide dtor double-frees / material panics).
 
-Run:  MUJOFIL_WARP_BACKEND=gl python benchmarks/battle_test_envs.py
+Run:  MUJOFIL_BACKEND=gl python benchmarks/battle_test_envs.py
 """
 import os
 import sys
@@ -190,7 +190,7 @@ def main():
             res = 96
             cmd = [sys.executable, os.path.abspath(__file__), "--worker",
                    key, kind, target, ibl_ibl, ibl_sky, str(n), str(res)]
-            env = dict(os.environ, MUJOFIL_WARP_BACKEND="gl")
+            env = dict(os.environ, MUJOFIL_BACKEND="gl")
             p = subprocess.run(cmd, capture_output=True, text=True, env=env)
             line = next((l for l in p.stdout.splitlines()
                          if l.startswith("RESULT")), None)

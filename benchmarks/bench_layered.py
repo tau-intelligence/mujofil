@@ -78,7 +78,7 @@ def main():
     print(f"=== LAYERED one-pass vs per-world render_batch (GL), res={res}, best-of-{reps} ===")
 
     def one(mode, n):
-        env = dict(os.environ); env["MUJOFIL_WARP_BACKEND"] = "gl"
+        env = dict(os.environ); env["MUJOFIL_BACKEND"] = "gl"
         env["PYTHONPATH"] = root + os.pathsep + env.get("PYTHONPATH", "")
         out = subprocess.run([sys.executable, os.path.abspath(__file__), "--worker", mode,
                               str(res), str(n), str(iters)],

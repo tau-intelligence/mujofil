@@ -12,7 +12,7 @@ Each case runs in its OWN subprocess (clean Filament state). A case PASSES when:
     (proves gl_Layer routing, not "everything in layer 0"), AND
   - when worlds are identical by construction, they ARE identical (no leak).
 
-Run:  MUJOFIL_WARP_BACKEND=gl python benchmarks/adversarial_layered.py
+Run:  MUJOFIL_BACKEND=gl python benchmarks/adversarial_layered.py
 """
 import os
 import sys
@@ -247,7 +247,7 @@ def main():
     npass = nfail = nerr = 0
     print("=== ADVERSARIAL LAYERED ROBUSTNESS ===")
     for name, n, res in cases:
-        env = dict(os.environ); env["MUJOFIL_WARP_BACKEND"] = "gl"
+        env = dict(os.environ); env["MUJOFIL_BACKEND"] = "gl"
         env["PYTHONPATH"] = HERE + os.pathsep + env.get("PYTHONPATH", "")
         out = subprocess.run([sys.executable, os.path.abspath(__file__), "--worker", name, str(n), str(res)],
                              capture_output=True, text=True, env=env, cwd=HERE)

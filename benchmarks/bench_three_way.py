@@ -17,7 +17,7 @@ whether our layered path closes the gap to MJWarp's batching.
 Run (uncapped address space for CUDA):
   systemd-run --user -p LimitAS=infinity --quiet --wait --pipe -- \
     bash -c 'cd ~/mujofil-warp && source .venv/bin/activate && \
-             MUJOFIL_WARP_BACKEND=gl python benchmarks/bench_three_way.py'
+             MUJOFIL_BACKEND=gl python benchmarks/bench_three_way.py'
 """
 import argparse
 import json
@@ -170,7 +170,7 @@ def main():
         print("FPS " + json.dumps({"fps": fps}))
         return
 
-    env = dict(os.environ, MUJOFIL_WARP_BACKEND="gl", MUJOFIL_NO_DRIVER_WARNING="1")
+    env = dict(os.environ, MUJOFIL_BACKEND="gl", MUJOFIL_NO_DRIVER_WARNING="1")
 
     def run(worker, scene, res, nworld, iters, warmup):
         cmd = [sys.executable, os.path.abspath(__file__), "--worker", worker,

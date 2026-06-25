@@ -7,7 +7,7 @@ montage the tiles each step and write an animated GIF so you can see each tile's
 robot-eye view evolve as its world advances.
 """
 import os, sys
-os.environ.setdefault("MUJOFIL_WARP_BACKEND", "gl")
+os.environ.setdefault("MUJOFIL_BACKEND", "gl")
 HERE = "/home/mumuksh/mujofil-warp"
 os.environ.setdefault("VF_MUJOCO_MATERIALS_DIR", os.path.join(HERE, "mujofil", "materials"))
 sys.path.insert(0, HERE)

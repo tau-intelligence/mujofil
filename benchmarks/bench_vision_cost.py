@@ -24,7 +24,7 @@ Each cell runs in its OWN subprocess (clean CUDA/Filament/warp state), best-of-2
 Run (uncapped address space for CUDA):
   systemd-run --user -p LimitAS=infinity --quiet --wait --pipe -- \
     bash -c 'cd ~/mujofil-warp && source .venv/bin/activate && \
-             MUJOFIL_WARP_BACKEND=gl python benchmarks/bench_vision_cost.py'
+             MUJOFIL_BACKEND=gl python benchmarks/bench_vision_cost.py'
 """
 import argparse
 import json
@@ -234,7 +234,7 @@ def main():
         print("RES " + json.dumps({"sps": sps, "ms": ms}))
         return
 
-    env = dict(os.environ, MUJOFIL_WARP_BACKEND="gl", MUJOFIL_NO_DRIVER_WARNING="1")
+    env = dict(os.environ, MUJOFIL_BACKEND="gl", MUJOFIL_NO_DRIVER_WARNING="1")
     RES = [int(x) for x in args.res_list.split(",")]
     NWORLD = [int(x) for x in args.n_list.split(",")]
 

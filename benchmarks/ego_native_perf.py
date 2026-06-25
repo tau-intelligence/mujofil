@@ -4,7 +4,7 @@ OVERHEAD-bound (heavy GLB == no backdrop), so collapsing N views into ONE
 instanced draw should win. This measures exactly that real tiled benefit.
 """
 import os, sys, time
-os.environ.setdefault("MUJOFIL_WARP_BACKEND", "gl")
+os.environ.setdefault("MUJOFIL_BACKEND", "gl")
 HERE = "/home/mumuksh/mujofil-warp"
 os.environ.setdefault("VF_MUJOCO_MATERIALS_DIR", os.path.join(HERE, "mujofil", "materials"))
 sys.path.insert(0, HERE)

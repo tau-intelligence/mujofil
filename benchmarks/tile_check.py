@@ -124,7 +124,7 @@ def main():
         ii, ss = (ibl if ibl else ("", ""))
         cmd = [sys.executable, os.path.abspath(__file__), "--worker",
                key, kind, target, ii, ss, str(n), str(res)]
-        env = dict(os.environ, MUJOFIL_WARP_BACKEND="gl")
+        env = dict(os.environ, MUJOFIL_BACKEND="gl")
         p = subprocess.run(cmd, capture_output=True, text=True, env=env)
         line = next((l for l in p.stdout.splitlines() if l.startswith("RESULT")), None)
         if not line:

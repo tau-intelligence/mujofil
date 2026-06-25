@@ -9,7 +9,7 @@ path (cam_id<0, no per-world loop) to isolate the Python auto-exposure cost.
 Run:
   systemd-run --user -p LimitAS=infinity --quiet --wait --pipe -- \
     bash -c 'cd ~/mujofil-warp && source .venv/bin/activate && \
-      PYTHONPATH=$PWD MUJOFIL_WARP_BACKEND=gl python benchmarks/profile_layered.py'
+      PYTHONPATH=$PWD MUJOFIL_BACKEND=gl python benchmarks/profile_layered.py'
 """
 import time
 import mujoco

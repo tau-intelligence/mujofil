@@ -9,7 +9,7 @@ A vs C shows what egocentric "costs" vs the fast shared-camera layered path. A v
 shows that egocentric is ~free relative to render_batch itself (same path).
 """
 import os, sys, time
-os.environ.setdefault("MUJOFIL_WARP_BACKEND", "gl")
+os.environ.setdefault("MUJOFIL_BACKEND", "gl")
 HERE = "/home/mumuksh/mujofil-warp"
 VFM = "/home/mumuksh/Visual-Fidelity-Mujoco"
 os.environ.setdefault("VF_MUJOCO_MATERIALS_DIR", os.path.join(HERE, "mujofil", "materials"))

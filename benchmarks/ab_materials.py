@@ -4,7 +4,7 @@ prove the reconstructed M2 materials are pixel-identical in the shared-camera pa
 (i.e. instanced:true + the unused worldClip/usePerInstanceCam params changed
 nothing for the published path)."""
 import os, sys
-os.environ.setdefault("MUJOFIL_WARP_BACKEND", "gl")
+os.environ.setdefault("MUJOFIL_BACKEND", "gl")
 HERE = "/home/mumuksh/mujofil-warp"
 sys.path.insert(0, HERE)
 import numpy as np, torch, mujoco

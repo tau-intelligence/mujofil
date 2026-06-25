@@ -5,9 +5,9 @@ render of the FULL warehouse (GLB + IBL + 16 spotlights) -> torch.cuda (zero-cop
 The ONLY difference is the renderer backend:
 
   gl     : OpenGL/GLX, N renders bracketed by ONE beginFrame/endFrame + ONE
-           flushAndWait = TRUE single-sync (the prize). MUJOFIL_WARP_BACKEND=gl.
+           flushAndWait = TRUE single-sync (the prize). MUJOFIL_BACKEND=gl.
   vulkan : shared Vulkan device + exportable swapchain, K=2 wave-sync (forced by
-           Filament's 2-frame in-flight cap). MUJOFIL_WARP_BACKEND=vulkan.
+           Filament's 2-frame in-flight cap). MUJOFIL_BACKEND=vulkan.
 
 Reports env-steps/s (= N*steps/wall) AND the render/flush/copy profile breakdown,
 across N up to 2048, subprocess-isolated per cell.
@@ -107,7 +107,7 @@ def main():
 
     def run(backend, res, n, steps=15, warmup=4):
         env = dict(os.environ, MUJOFIL_NO_DRIVER_WARNING="1", MUJOCO_GL="egl",
-                   MUJOFIL_WARP_BACKEND=backend,
+                   MUJOFIL_BACKEND=backend,
                    MUJOFIL_WARP_FLUSH_EVERY=("100000" if backend == "gl" else "2"))
         cmd = [sys.executable, os.path.abspath(__file__), "--backend", backend,
                "--res", str(res), "--n", str(n), "--steps", str(steps), "--warmup", str(warmup)]

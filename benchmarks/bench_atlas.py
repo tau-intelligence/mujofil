@@ -5,8 +5,8 @@ is isolated from physics. Reports cam/s and the render/flush/copy ms breakdown
 for each mode across a sweep of batch sizes. Run each mode in its OWN process
 (env decides the path) so Filament state never mixes.
 
-  MUJOFIL_WARP_BACKEND=gl python benchmarks/bench_atlas.py            # both modes
-  MUJOFIL_WARP_BACKEND=gl MUJOFIL_WARP_ATLAS=1 python ... --worker N  # one cell
+  MUJOFIL_BACKEND=gl python benchmarks/bench_atlas.py            # both modes
+  MUJOFIL_BACKEND=gl MUJOFIL_WARP_ATLAS=1 python ... --worker N  # one cell
 """
 import os
 import sys
@@ -122,7 +122,7 @@ def main():
 
     def one(n, mode_env):
         env = dict(os.environ)
-        env["MUJOFIL_WARP_BACKEND"] = "gl"
+        env["MUJOFIL_BACKEND"] = "gl"
         env.update(mode_env)
         env["PYTHONPATH"] = repo_root + os.pathsep + env.get("PYTHONPATH", "")
         out = subprocess.run(

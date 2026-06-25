@@ -97,7 +97,7 @@ def main():
 
     def run(worker, res, n, steps=15, warmup=4):
         env = dict(os.environ, MUJOFIL_NO_DRIVER_WARNING="1", MUJOCO_GL="egl",
-                   MUJOFIL_WARP_BACKEND="gl", MUJOFIL_WARP_FLUSH_EVERY="100000")
+                   MUJOFIL_BACKEND="gl", MUJOFIL_WARP_FLUSH_EVERY="100000")
         cmd = [sys.executable, os.path.abspath(__file__), "--worker", worker,
                "--res", str(res), "--n", str(n), "--steps", str(steps), "--warmup", str(warmup)]
         try:

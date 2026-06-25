@@ -2,7 +2,7 @@
 Compare render_batch (multi-RT ground truth) vs render_batch_layered egocentric.
 Saves both montages so we can SEE which geometry renders."""
 import os, sys
-os.environ.setdefault("MUJOFIL_WARP_BACKEND", "gl")
+os.environ.setdefault("MUJOFIL_BACKEND", "gl")
 HERE = "/home/mumuksh/mujofil-warp"
 os.environ.setdefault("VF_MUJOCO_MATERIALS_DIR", os.path.join(HERE, "mujofil", "materials"))
 sys.path.insert(0, HERE)

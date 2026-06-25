@@ -12,7 +12,7 @@ so large-coverage correctness AND per-tile routing can both be eyeballed.
 Run (uncapped AS for CUDA):
   systemd-run --user -p LimitAS=infinity --quiet --wait --pipe -- bash -c \
     'cd ~/mujofil-warp && source .venv/bin/activate && \
-     MUJOFIL_WARP_BACKEND=gl python benchmarks/full_scene_coverage.py'
+     MUJOFIL_BACKEND=gl python benchmarks/full_scene_coverage.py'
 """
 import os, sys, json, subprocess, itertools
 
@@ -141,7 +141,7 @@ def main():
     print(f"=== FULL-SCENE COVERAGE (N={n}, res={res}) -> {OUT} ===")
     for key in SCENES:
         cmd = [sys.executable, os.path.abspath(__file__), "--worker", key, str(n), str(res)]
-        env = dict(os.environ, MUJOFIL_WARP_BACKEND="gl")
+        env = dict(os.environ, MUJOFIL_BACKEND="gl")
         p = subprocess.run(cmd, capture_output=True, text=True, env=env)
         line = next((l for l in p.stdout.splitlines() if l.startswith("RESULT")), None)
         if not line:

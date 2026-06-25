@@ -5,7 +5,7 @@ IBL + 16 spotlights + SSAO/shadows). Render-only (no MJWarp physics): render N
 static host datas repeatedly so the renderer is isolated. Each cell runs in its
 own process (env picks the path), best-of-3, os._exit past the teardown panic.
 
-  MUJOFIL_WARP_BACKEND=gl python benchmarks/bench_atlas_warehouse.py
+  MUJOFIL_BACKEND=gl python benchmarks/bench_atlas_warehouse.py
 """
 import json
 import os
@@ -96,7 +96,7 @@ def main():
     ]
 
     def one(n, menv):
-        env = dict(os.environ); env["MUJOFIL_WARP_BACKEND"] = "gl"; env.update(menv)
+        env = dict(os.environ); env["MUJOFIL_BACKEND"] = "gl"; env.update(menv)
         env["PYTHONPATH"] = repo_root + os.pathsep + env.get("PYTHONPATH", "")
         out = subprocess.run([sys.executable, os.path.abspath(__file__), "--worker",
                               str(n), str(res), str(iters)],

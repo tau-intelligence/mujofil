@@ -113,7 +113,7 @@ def main():
     for eff in ("on", "off"):
         out = os.path.join(HERE, "out", f"ssao_{eff}.png")
         env = dict(os.environ)
-        env["MUJOFIL_WARP_BACKEND"] = "gl"
+        env["MUJOFIL_BACKEND"] = "gl"
         env["PYTHONPATH"] = HERE + os.pathsep + env.get("PYTHONPATH", "")
         env["VF_MUJOCO_MATERIALS_DIR"] = os.path.join(HERE, "mujofil", "materials")
         r = subprocess.run([sys.executable, os.path.abspath(__file__), "--worker", eff, out],

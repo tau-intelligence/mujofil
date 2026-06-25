@@ -12,7 +12,7 @@ HERE = "/home/mumuksh/mujofil-warp"; VFM = "/home/mumuksh/Visual-Fidelity-Mujoco
 
 CHILD = r'''
 import os, sys, time
-os.environ.setdefault("MUJOFIL_WARP_BACKEND", "gl")
+os.environ.setdefault("MUJOFIL_BACKEND", "gl")
 HERE = "/home/mumuksh/mujofil-warp"; VFM = "/home/mumuksh/Visual-Fidelity-Mujoco"
 os.environ.setdefault("VF_MUJOCO_MATERIALS_DIR", os.path.join(HERE, "mujofil", "materials"))
 sys.path.insert(0, HERE); sys.path.insert(0, VFM)
@@ -58,7 +58,7 @@ print("RESULT", n*8/(time.perf_counter()-t0))
 def run(mode, scene, res, n, atlas):
     env = "MUJOFIL_WARP_ATLAS=1 " if atlas else ""
     cmd = (f"cd {HERE} && source .venv/bin/activate && {env}"
-           f"PYTHONPATH={HERE} MUJOFIL_WARP_BACKEND=gl python -c '{CHILD}' {mode} {scene} {res} {n}")
+           f"PYTHONPATH={HERE} MUJOFIL_BACKEND=gl python -c '{CHILD}' {mode} {scene} {res} {n}")
     full = ["systemd-run","--user","-p","LimitAS=infinity","--quiet","--wait","--pipe","--",
             "bash","-c",cmd]
     try:
