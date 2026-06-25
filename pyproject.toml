@@ -105,6 +105,12 @@ manylinux-x86_64-image = "quay.io/pypa/manylinux_2_34_x86_64"
 # (crtbeginS.o, libgcc) and the linker, which it otherwise cannot locate.
 environment = { CC = "/opt/llvm/bin/clang", CXX = "/opt/llvm/bin/clang++", CFLAGS = "--gcc-toolchain=/opt/rh/gcc-toolset-14/root/usr", CXXFLAGS = "--gcc-toolchain=/opt/rh/gcc-toolset-14/root/usr", LDFLAGS = "--gcc-toolchain=/opt/rh/gcc-toolset-14/root/usr", FILAMENT_DIR = "/project/_filament_egl", CUDAToolkit_ROOT = "/usr/local/cuda-12.0" }
 before-all = [
+    # Harden dnf against flaky AlmaLinux mirrors: a mid-download timeout used to
+    # leave the CUDA toolkit half-installed, which made CMake silently fall back
+    # to dynamically linking a stray libcudart.so.11.0 that auditwheel then
+    # rejected. Longer timeout + more retries + fastest-mirror + parallel
+    # downloads make the installs actually complete.
+    "printf 'timeout=300\\nretries=15\\nminrate=50\\nfastestmirror=1\\nmax_parallel_downloads=10\\n' >> /etc/dnf/dnf.conf || true",
     # Build deps: GL + EGL headers, common libs. (clang itself comes from the
     # LLVM tarball below; the dnf clang lacks libc++ headers.)
     "dnf install -y wget tar xz gzip libatomic libpng-devel zlib-devel libglvnd-devel mesa-libGL-devel mesa-libEGL-devel || yum install -y wget tar xz gzip libatomic libpng-devel zlib-devel libglvnd-devel mesa-libGL-devel mesa-libEGL-devel",
@@ -115,6 +121,11 @@ before-all = [
     # cuda_runtime.h needs crt/host_config.h, which is NOT in cuda-cudart-devel;
     # cuda-nvcc provides the crt/ headers.
     "dnf install -y cuda-cudart-devel-12-0 cuda-driver-devel-12-0 cuda-nvcc-12-0",
+    # Fail fast (and re-runnably) if the CUDA toolkit did NOT install cleanly:
+    # without the static runtime, CMake would link a stray dynamic CUDA 11
+    # libcudart and the wheel would die much later at auditwheel. Catching it
+    # here makes a flaky-mirror run an obvious, retryable before-all failure.
+    "test -f /usr/local/cuda-12.0/lib64/libcudart_static.a || { echo 'CUDA static runtime missing — toolkit install incomplete (mirror flake); re-run'; exit 1; }",
     # Full LLVM 18.1.8 toolchain (glibc 2.17 build): provides clang++ AND its
     # bundled libc++ headers + runtime as one consistent set. Extract to
     # /opt/llvm (CC/CXX point here). Also copy the libc++/libunwind runtime .so
