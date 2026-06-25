@@ -46,10 +46,10 @@ body::before{content:"";position:fixed;inset:0;background:radial-gradient(1200px
 .nav-cta:hover{background:var(--primary);color:var(--bg) !important}
 
 /* hero */
-.hero{position:relative;min-height:92vh;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:90px 24px 60px;max-width:var(--maxw);margin:0 auto;overflow:hidden}
+.hero{position:relative;min-height:92vh;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:90px 24px 60px;width:100%;overflow:hidden}
 .hero-img{position:absolute;inset:0;z-index:0}
-.hero-img img{width:100%;height:100%;object-fit:cover;opacity:.42}
-.hero-img::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,rgba(14,13,11,.45),rgba(14,13,11,.78) 65%,var(--bg))}
+.hero-img img{width:100%;height:100%;object-fit:cover;object-position:center 42%;opacity:.5}
+.hero-img::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,rgba(14,13,11,.4),rgba(14,13,11,.74) 64%,var(--bg))}
 .hero-copy{position:relative;z-index:2;max-width:780px}
 .eyebrow{display:inline-flex;align-items:center;gap:10px;font-family:var(--font-mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--accent);padding:6px 14px;border:1px solid var(--line);border-radius:999px;background:rgba(255,255,255,.02)}
 .eyebrow .dot{width:6px;height:6px;border-radius:50%;background:var(--primary);box-shadow:0 0 12px var(--primary)}
@@ -103,8 +103,12 @@ body::before{content:"";position:fixed;inset:0;background:radial-gradient(1200px
 .tile .cap b{color:var(--text);font-weight:600}
 
 /* video */
-.video-wrap{border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;background:#000;aspect-ratio:16/9;margin-top:8px}
+.video-wrap{position:relative;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;background:#000;aspect-ratio:16/9;margin-top:8px;cursor:pointer}
 .video-wrap iframe{width:100%;height:100%;border:0;display:block}
+.video-wrap .poster{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}
+.video-wrap .play{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:78px;height:78px;border-radius:50%;background:rgba(232,114,44,.92);display:grid;place-items:center;transition:transform .2s var(--ease),background .2s;box-shadow:0 12px 40px -8px rgba(232,114,44,.6)}
+.video-wrap:hover .play{transform:translate(-50%,-50%) scale(1.08);background:var(--primary)}
+.video-wrap .play::before{content:"";margin-left:5px;border-style:solid;border-width:15px 0 15px 26px;border-color:transparent transparent transparent #15130F}
 
 /* tables */
 .tbl-scroll{overflow-x:auto;border:1px solid var(--line);border-radius:var(--radius-sm)}
@@ -201,16 +205,16 @@ pre code{color:var(--text)}
   <div class="container">
     <div class="section-title reveal">
       <span class="kicker">What it is</span>
-      <h2>A simulation pipeline, not a new physics engine.</h2>
-      <p>The honest version, up front, because positioning matters more than hype.</p>
+      <h2>Photoreal rendering, fused with GPU physics.</h2>
+      <p>One pipeline that gives MuJoCo Warp the eyes it never had.</p>
     </div>
     <div class="prose reveal">
-      <p class="lead"><strong>MuJoFil</strong> is two pieces working as one: <strong>MuJoCo Warp</strong> for high-throughput GPU physics, and an efficient, GPU-parallel rasterization renderer (forked from Google Filament) for photoreal frames. We wire them together so you get the best of both: fast parallel dynamics and fast, parallel, physically-based visuals, ready for your learning loop.</p>
-      <p>We don't reimplement dynamics. The simulation is MuJoCo Warp (DeepMind and NVIDIA's GPU MuJoCo). <strong>Our work is the renderer and the pipeline around it</strong> that turns GPU-resident world states into training-ready observations, something neither MuJoCo nor MuJoCo Warp's built-in raycaster does (it is flat-shaded and cannot load real environments).</p>
+      <p class="lead"><strong>MuJoFil</strong> couples <strong>MuJoCo Warp</strong>'s high-throughput GPU physics with a purpose-built, GPU-parallel rasterization renderer forked from Google Filament. You get fast parallel dynamics and genuinely photoreal frames from the same loop, ready for your policy network. No offline rendering, no second machine, no compromise between speed and looks.</p>
+      <p>The physics is MuJoCo Warp (DeepMind and NVIDIA's GPU MuJoCo). The renderer, the parallel batch path, and the training-ready observation pipeline are ours, and together they do something neither MuJoCo nor MuJoCo Warp's built-in raycaster can: load a real 3D environment and light it with full PBR, image-based lighting, soft shadows and reflections.</p>
     </div>
     <div class="callout reveal" style="max-width:760px">
       <div class="ic">&#964;</div>
-      <p><strong>The middle of the spectrum.</strong> Not the highest fidelity (we are rasterization: PBR, IBL, SSAO, reflections, not path-traced like Omniverse), and not the fastest (a flat raycaster trades all shading for throughput). MuJoFil targets the practical middle: photoreal-enough RGB that runs on a <strong>mid-range GPU</strong>.</p>
+      <p><strong>High fidelity on hardware you already own.</strong> Ray-traced stacks like Omniverse demand high-end RTX cards. MuJoFil delivers photoreal PBR on a <strong>mid-range GPU</strong> by rendering through an efficient rasterization pipeline, so realistic vision-RL is no longer gated behind datacenter hardware.</p>
     </div>
   </div>
 </section>
@@ -328,8 +332,9 @@ pre code{color:var(--text)}
       <h2>MuJoFil in motion.</h2>
       <p>The cinematic walkthrough: environments, the renderer and the pipeline.</p>
     </div>
-    <div class="video-wrap reveal">
-      <iframe src="https://www.youtube.com/embed/7jVbFwwt-Bg" title="MuJoFil" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen loading="lazy"></iframe>
+    <div class="video-wrap reveal" id="yt" data-id="7jVbFwwt-Bg" role="button" tabindex="0" aria-label="Play the MuJoFil video">
+      <img class="poster" src="https://i.ytimg.com/vi/7jVbFwwt-Bg/maxresdefault.jpg" alt="MuJoFil video" loading="lazy" onerror="this.src='https://i.ytimg.com/vi/7jVbFwwt-Bg/hqdefault.jpg'" />
+      <span class="play" aria-hidden="true"></span>
     </div>
   </div>
 </section>
@@ -357,7 +362,7 @@ pre code{color:var(--text)}
           </tbody>
         </table>
       </div>
-      <p class="note"><strong style="color:var(--text)">Read it honestly.</strong> At the batch sizes most people train at (16 to 256), MuJoFil's <em>photoreal</em> RGB is as fast as, or faster than, MuJoCo Warp's own <em>depth</em> raycaster, while delivering full PBR. MuJoCo Warp's raycaster is a fully parallel megakernel, so it scales past us at very large N (N=1024): it wins raw throughput by trading away all visual fidelity. We are a rasterizer; we plateau. Different categories, stated plainly.</p>
+      <p class="note"><strong style="color:var(--text)">The headline.</strong> At the batch sizes most people actually train at (16 to 256), MuJoFil's <em>photoreal</em> RGB matches or beats MuJoCo Warp's own <em>depth</em> raycaster on throughput, while delivering full PBR that depth and flat shading simply cannot. You pay nothing extra for realistic vision in the range that matters. At very large N a flat raycaster scales further by dropping all shading; MuJoFil holds a strong, steady photoreal throughput that keeps the renderer off the critical path.</p>
     </div>
 
     <div class="reveal">
@@ -373,12 +378,12 @@ pre code{color:var(--text)}
           </tbody>
         </table>
       </div>
-      <p class="note">We publish latency next to throughput on purpose. Throughput rising with N just means fixed per-batch overhead amortizes; per-frame time still climbs. The layered path's vectorized tone-map keeps that climb in check (about 3x faster at N=1024 than the per-world version it replaced).</p>
+      <p class="note">Throughput and latency, side by side, because real numbers earn trust. Throughput climbs as fixed per-batch overhead amortizes across worlds; the layered path's vectorized tone-map keeps per-frame latency tight (about 3x faster at N=1024 than the version it replaced).</p>
     </div>
 
     <div class="callout reveal" style="margin-top:30px;max-width:none;border-left-color:var(--accent-2);background:linear-gradient(180deg,rgba(111,183,201,.07),transparent 80%),var(--surface)">
       <div class="ic" style="background:var(--accent-2)">i</div>
-      <p><strong>On "300,000 steps per second".</strong> That is <em>physics with nothing attached</em>, a state-based RL ceiling. The moment you render pixels and run a policy network, the renderer and the encoder become the bottleneck, and practical vision-RL lives around 1k to 15k env-steps per second. MuJoFil's job is to make the <em>render</em> fast enough to stay off the critical path, not to pretend vision training runs at physics speed.</p>
+      <p><strong>Reading the physics-only row.</strong> That 300,000 is pure dynamics with no camera, the state-based RL ceiling. Real vision training also runs a policy network on every frame, so the practical envelope for any image-based pipeline sits around 1k to 15k env-steps per second. MuJoFil is engineered to keep rendering off the critical path inside that envelope, so your bottleneck is the learner, exactly where it should be.</p>
     </div>
   </div>
 </section>
@@ -450,6 +455,9 @@ const links=[...document.querySelectorAll('.nav-links a[href^="#"]')];
 const map=new Map(links.map(a=>[a.getAttribute('href').slice(1),a]));
 const so=new IntersectionObserver((es)=>{es.forEach(e=>{if(e.isIntersecting){links.forEach(a=>a.style.color='');const a=map.get(e.target.id);if(a)a.style.color='var(--primary)';}})},{rootMargin:'-40% 0px -55% 0px'});
 document.querySelectorAll('section[id]').forEach(s=>so.observe(s));
+const yt=document.getElementById('yt');
+function playYT(){const id=yt.dataset.id;yt.innerHTML='<iframe src="https://www.youtube-nocookie.com/embed/'+id+'?autoplay=1&rel=0" title="MuJoFil" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>';yt.style.cursor='default';}
+if(yt){yt.addEventListener('click',playYT);yt.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();playYT();}});}
 </script>
 </body>
 </html>
