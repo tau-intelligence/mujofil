@@ -33,17 +33,13 @@ body::before{content:"";position:fixed;inset:0;background:radial-gradient(1200px
 .section{padding:88px 0;position:relative;z-index:1}
 .kicker{font-family:var(--font-mono);font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:var(--primary)}
 
-/* nav */
-.nav{position:sticky;top:0;z-index:50;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);background:rgba(14,13,11,.7);border-bottom:1px solid var(--line)}
-.nav-inner{max-width:var(--maxw);margin:0 auto;padding:13px 24px;display:flex;align-items:center;justify-content:space-between;gap:24px}
-.brand{display:flex;align-items:center;gap:10px;color:var(--text);font-weight:600;letter-spacing:.02em}
-.brand img{height:28px;width:auto}
-.brand .nm{font-size:15px}
-.nav-cta{display:inline-flex;align-items:center;gap:8px;padding:8px 15px !important;border:1px solid var(--primary);color:var(--primary) !important;border-radius:999px}
-.nav-cta:hover{background:var(--primary);color:var(--bg) !important}
+/* floating logo (no nav bar) */
+.floating-logo{position:fixed;top:22px;left:26px;z-index:50;display:inline-flex;align-items:center;transition:transform .2s var(--ease),opacity .2s var(--ease);opacity:.92}
+.floating-logo img{height:34px;width:auto;filter:drop-shadow(0 2px 10px rgba(0,0,0,.55))}
+.floating-logo:hover{transform:translateY(-1px);opacity:1}
 
 /* hero */
-.hero{position:relative;min-height:92vh;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:90px 24px 60px;width:100%;overflow:hidden}
+.hero{position:relative;min-height:96vh;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:60px 24px;width:100%;overflow:hidden}
 .hero-img{position:absolute;inset:0;z-index:0}
 .hero-img img{width:100%;height:100%;object-fit:cover;object-position:center 42%;opacity:.5}
 .hero-img::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,rgba(14,13,11,.4),rgba(14,13,11,.74) 64%,var(--bg))}
@@ -163,15 +159,9 @@ pre code{color:var(--text)}
 </head>
 <body>
 
-<nav class="nav">
-  <div class="nav-inner">
-    <a class="brand" href="https://tau-intelligence.com" target="_blank" rel="noopener" title="Tau Intelligence">
-      <img src="img/tau_logo.png" alt="tau-intelligence" />
-      <span class="nm">MuJoFil</span>
-    </a>
-    <a class="nav-cta" href="https://github.com/tau-intelligence/mujofil-warp" target="_blank" rel="noopener">GitHub &#8599;</a>
-  </div>
-</nav>
+<a class="floating-logo" href="https://tau-intelligence.com" target="_blank" rel="noopener" title="Tau Intelligence">
+  <img src="img/tau_logo.png" alt="tau-intelligence" />
+</a>
 
 <header class="hero" id="top">
   <div class="hero-img"><img src="img/hero_wide.png" alt="Photoreal Sponza atrium rendered by MuJoFil" /></div>
@@ -366,11 +356,6 @@ scene = mujofil_warp.<span class="tok-f">ParallelScene</span>(
           <a class="btn btn-ghost" href="https://pypi.org/project/mujofil-warp/" target="_blank" rel="noopener">PyPI &#8599;</a>
         </div>
       </div>
-    </div>
-
-    <div class="callout reveal" style="margin-top:34px;max-width:none">
-      <div class="ic">&#8634;</div>
-      <p><strong>Running CPU MuJoCo instead?</strong> The sister package <a href="https://github.com/tau-intelligence/MuJoCo-Filament" target="_blank" rel="noopener">mujofil</a> is the same Filament renderer for standard CPU MuJoCo: photoreal frames as NumPy arrays, a drop-in swap for <code>mujoco.Renderer</code>.</p>
     </div>
   </div>
 </section>
