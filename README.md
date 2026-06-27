@@ -214,18 +214,20 @@ non-NVIDIA GPUs. These need a from-source Filament build (planned).
 
 ### PyTorch (zero-copy target)
 
-`torch` is an **optional** dependency (`pip install "mujofil[torch]"`), and
-**you must install a build that matches your GPU's compute capability** — the
-zero-copy DLPack handoff runs CUDA kernels through your torch, not ours.
+`torch` is a dependency and is installed automatically. The default PyPI build
+works for **Ada / Hopper / Ampere** GPUs. On **Blackwell** you must replace it
+with a CUDA-12.8 build, because the zero-copy DLPack handoff runs CUDA kernels
+through your torch, not ours:
 
 - **Blackwell (RTX 50-series / sm_120, e.g. 5090):** install the **CUDA 12.8**
   torch — `pip install torch --index-url https://download.pytorch.org/whl/cu128`.
   A `torch+cu124` (or older) build has no sm_120 kernels and fails at runtime with
   `CUDA error: no kernel image is available for execution on the device`.
-- **Ada / Hopper / Ampere (sm_80–sm_90):** the default `cu124` torch is fine.
+- **Ada / Hopper / Ampere (sm_80–sm_90):** the default torch is fine.
 
 `warp-lang` and `mujoco-warp` JIT-compile for the local GPU, so they need no such
-pinning — only torch ships prebuilt device code.
+pinning — only torch ships prebuilt device code. If you manage torch yourself
+(common on clusters), install your CUDA-matched build first; pip will keep it.
 
 ### Headless / display
 

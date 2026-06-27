@@ -22,10 +22,20 @@ dependencies = [
     "mujoco>=3.2",
     "mujoco-warp",
     "warp-lang",
-    "numpy",
+    # numpy<2: the native module is built against the NumPy 1.x C-ABI; NumPy 2.x
+    # breaks it at runtime. Pin until the native modules are rebuilt for 2.x.
+    "numpy<2",
+    # torch is a HARD dependency, not optional: mujofil returns rendered frames
+    # as zero-copy torch.cuda tensors, so it cannot do anything useful without
+    # PyTorch. The default PyPI build covers Ampere/Ada/Hopper; Blackwell (5090,
+    # sm_120) needs a cu128 build -- see the README -- and the preflight check
+    # reports a clear message if the installed torch lacks your GPU's kernels.
+    "torch>=2.4",
 ]
 
 [project.optional-dependencies]
+# Kept as a no-op alias so `pip install "mujofil[torch]"` (older docs) still
+# resolves; torch is now a hard dependency above.
 torch = ["torch>=2.4"]
 examples = ["pillow"]
 # Asset tooling: convert USD / GLB environments into a visual GLB + a MuJoCo
@@ -33,7 +43,7 @@ examples = ["pillow"]
 # deps, so kept optional -- only with `pip install "mujofil[usd]"`.
 # Self-pin to this exact version so the resolver can't backtrack to an older
 # mujofil that lacks the [usd] extra.
-usd = ["mujofil==0.2.0", "usd-core>=23.0", "trimesh>=4.0", "scipy>=1.7", "coacd>=1.0", "pillow", "numpy"]
+usd = ["mujofil==0.2.0", "usd-core>=23.0", "trimesh>=4.0", "scipy>=1.7", "coacd>=1.0", "pillow", "numpy<2"]
 
 [project.scripts]
 mujofil-usd-to-assets = "mujofil.tools.usd_to_assets:main"

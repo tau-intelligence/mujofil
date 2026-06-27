@@ -203,9 +203,12 @@ add_warp_backend(_mujofil_warp_gl _mujofil_warp_gl
 
 # Vulkan shared-device backend — needs vendored bluevk + utils source headers;
 # links bluegl/bluevk (already in FILAMENT_LIBS), no external -lvulkan (bluevk
-# owns the symbols).
+# owns the symbols). MUST also link EGL: the EGL-from-source Filament
+# libbackend.a references eglCreateWindowSurface (dead code on the Vulkan path),
+# so the static link fails with 'undefined symbol: eglCreateWindowSurface'
+# unless EGL is provided -- the symptom seen in the published 0.2.0 Vulkan module.
 add_warp_backend(_mujofil_warp _mujofil_warp
-    native/renderer_warp.cpp "${BLUEVK_INC};${UTILS_SRC_INC}" "")
+    native/renderer_warp.cpp "${BLUEVK_INC};${UTILS_SRC_INC}" "EGL")
 
 # ============================================================================
 # Package data: compiled Filament materials (loaded via VF_MUJOCO_MATERIALS_DIR,
