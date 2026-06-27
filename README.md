@@ -219,11 +219,12 @@ works for **Ada / Hopper / Ampere** GPUs. On **Blackwell** you must replace it
 with a CUDA-12.8 build, because the zero-copy DLPack handoff runs CUDA kernels
 through your torch, not ours:
 
-- **Blackwell (RTX 50-series / sm_120, e.g. 5090):** install the **CUDA 12.8**
-  torch, `pip install torch --index-url https://download.pytorch.org/whl/cu128`.
-  A `torch+cu124` (or older) build has no sm_120 kernels and fails at runtime with
-  `CUDA error: no kernel image is available for execution on the device`.
-- **Ada / Hopper / Ampere (sm_80–sm_90):** the default torch is fine.
+- **Blackwell (sm_120 consumer RTX 50-series, e.g. 5090; sm_100 datacenter, e.g.
+  B200):** install a **CUDA 12.8** torch, `pip install torch --index-url
+  https://download.pytorch.org/whl/cu128`. A `torch+cu124` (or older) build has no
+  Blackwell kernels and fails at runtime with `CUDA error: no kernel image is
+  available for execution on the device`.
+- **Ada / Hopper / Ampere (sm_80 to sm_90):** the default torch is fine.
 
 `warp-lang` and `mujoco-warp` JIT-compile for the local GPU, so they need no such
 pinning; only torch ships prebuilt device code. If you manage torch yourself
@@ -236,6 +237,11 @@ pinning; only torch ships prebuilt device code. If you manage torch yourself
 > raises a clear, actionable error (it does not crash). The fix is to install a
 > torch build matching your driver, e.g. `pip install torch --index-url
 > https://download.pytorch.org/whl/cu124`.
+
+> **If the default GL backend fails to start** on an unusual GPU/driver (some
+> datacenter parts report a `GL_INVALID_ENUM` at Filament `Engine::create`), the
+> error now includes Filament's real message and tells you to try the headless
+> Vulkan backend, which uses a different driver path: `MUJOFIL_BACKEND=vulkan`.
 
 ### Headless / display
 

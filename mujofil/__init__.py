@@ -18,7 +18,7 @@ try:  # single source of truth = the installed wheel's metadata (pyproject versi
     from importlib.metadata import version as _pkg_version
     __version__ = _pkg_version("mujofil")
 except Exception:  # editable/source checkout without metadata
-    __version__ = "0.2.3"
+    __version__ = "0.2.4"
 
 # Live renderers, closed deterministically at interpreter exit so the native
 # Filament/CUDA teardown runs while the interpreter is healthy -- not during the
@@ -389,7 +389,29 @@ class WarpRenderer:
             _lm = os.path.join(_HERE, "materials_layered")
             if os.path.isdir(_lm):
                 os.environ["VF_MUJOCO_MATERIALS_DIR"] = _lm
-        self._r = native.WarpRenderer(config)
+        try:
+            self._r = native.WarpRenderer(config)
+        except Exception as exc:
+            # The native renderer (Filament Engine) failed to initialize. The C++
+            # binding now surfaces Filament's real message (e.g. a GL_INVALID_ENUM
+            # at Engine::create on some GPU/driver combos). If this is the default
+            # GL backend and the user did not force it, point them at the headless
+            # Vulkan backend, which initializes on a different driver path and is a
+            # working fallback on hardware where the GL backend cannot start.
+            forced = bool(os.environ.get("MUJOFIL_BACKEND") or
+                          os.environ.get("MUJOFIL_WARP_BACKEND"))
+            is_gl = not getattr(native, "__name__", "").endswith("_warp")
+            if is_gl and not forced:
+                raise RuntimeError(
+                    "the OpenGL renderer backend failed to initialize on this "
+                    "GPU/driver:\n\n  " + str(exc) + "\n\n"
+                    "Try the headless Vulkan backend instead, which uses a "
+                    "different driver path and often works where GL cannot "
+                    "start (e.g. some datacenter GPUs):\n"
+                    "  MUJOFIL_BACKEND=vulkan python your_script.py\n"
+                    "(Set MUJOFIL_BACKEND=gl to keep forcing OpenGL.)") from exc
+            raise
+
         # Capture the camera exposure (EV) so the layered compositor can apply the
         # SAME deterministic FILMIC+exposure tonemap Filament's post-processing
         # applies in the render_batch path (the layered OBJECTS pass runs with

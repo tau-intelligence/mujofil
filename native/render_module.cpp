@@ -15,6 +15,8 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include <utils/Panic.h>
+
 #include <cstdint>
 #include <cstdlib>
 #include <memory>
@@ -258,6 +260,20 @@ private:
 
 PYBIND11_MODULE(MUJOFIL_WARP_MODULE, m) {
     m.doc() = "mujofil-warp native: Filament PBR render of MuJoCo -> torch CUDA (zero-copy)";
+
+    // Surface Filament's real error text. Filament throws utils::Panic, which is
+    // NOT derived from std::exception, so pybind11's default handler can only
+    // report the useless "Caught an unknown exception!". Catch it here and pass
+    // its .what() through (e.g. the actual reason Engine::create() failed on an
+    // unsupported GPU/driver). Non-Panic exceptions fall through to pybind's
+    // default translator unchanged.
+    py::register_exception_translator([](std::exception_ptr p) {
+        try {
+            if (p) std::rethrow_exception(p);
+        } catch (const utils::Panic& e) {
+            PyErr_SetString(PyExc_RuntimeError, e.what());
+        }
+    });
 
     py::class_<RendererConfig>(m, "RendererConfig")
         .def(py::init<>())
