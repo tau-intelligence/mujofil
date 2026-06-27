@@ -18,7 +18,7 @@ try:  # single source of truth = the installed wheel's metadata (pyproject versi
     from importlib.metadata import version as _pkg_version
     __version__ = _pkg_version("mujofil")
 except Exception:  # editable/source checkout without metadata
-    __version__ = "0.2.0"
+    __version__ = "0.2.1"
 
 # Live renderers, closed deterministically at interpreter exit so the native
 # Filament/CUDA teardown runs while the interpreter is healthy -- not during the
