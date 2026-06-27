@@ -120,6 +120,17 @@ _native = None
 def _get_native():
     global _native
     if _native is None:
+        # Import torch BEFORE loading the native (cudart-linked) .so. On a
+        # torch/driver CUDA mismatch, torch's lazy CUDA probe
+        # (torch.cuda.is_available()) SEGFAULTS if torch's C extension is first
+        # imported *after* the native module has loaded the CUDA runtime. Loading
+        # torch first makes that probe fail gracefully (returns False) so the
+        # preflight can report a clear, actionable error instead of crashing.
+        # torch is a hard dependency of this package, so importing it here is safe.
+        try:
+            import torch  # noqa: F401
+        except Exception:  # noqa: BLE001 - missing torch is reported by _preflight_check
+            pass
         _native = _load_native()
     return _native
 
@@ -346,22 +357,39 @@ class WarpRenderer:
 
     def __init__(self, config: "RendererConfig | None" = None,
                  *, preset: str | None = None, **toggles):
+        # Clear, actionable error (not a raw native abort/segfault) if torch/NVIDIA
+        # are missing. Run this BEFORE make_config(), which loads the native
+        # cudart-linked module: importing torch *after* that module makes torch's
+        # CUDA probe segfault on a driver/runtime mismatch, defeating the whole
+        # point of the preflight (a clean message instead of a crash).
+        _preflight_check()
         if config is None:
             kw = dict(QUALITY_PRESETS[preset]) if preset else {}
             kw.update(toggles)
             config = make_config(**kw)
         elif preset or toggles:
             raise TypeError("pass either `config=` or keyword toggles/`preset=`, not both")
-        # Clear, actionable error (not a raw native abort) if torch/NVIDIA are missing.
-        _preflight_check()
-        # Layered (parallel-batch) rendering needs the gl_Layer material set, which
-        # is compiled separately (matc -g). Point the material loader at it BEFORE
-        # the native renderer builds its MaterialManager.
+        native = _get_native()
+        # The layered (single-draw parallel-batch) path is OpenGL-only: it relies
+        # on the gl_Layer routing fork that exists solely in the GL backend. The
+        # Vulkan backend only carries link-time stubs that throw, and pybind11
+        # reports that C++ exception as an opaque "unknown exception", so guard it
+        # HERE with a clear, actionable message before touching the native module.
         if getattr(config, "layered", False):
+            if getattr(native, "__name__", "").endswith("_warp"):  # the Vulkan module
+                raise ValueError(
+                    "layered rendering is only available on the OpenGL backend, "
+                    "but MUJOFIL_BACKEND=vulkan is selected. Use the default "
+                    "OpenGL backend (unset MUJOFIL_BACKEND, or set it to 'gl') "
+                    "for layered rendering; the Vulkan backend uses the "
+                    "per-frame batch path (render_batch).")
+            # Layered needs the gl_Layer material set, compiled separately
+            # (matc -g). Point the material loader at it BEFORE the native
+            # renderer builds its MaterialManager.
             _lm = os.path.join(_HERE, "materials_layered")
             if os.path.isdir(_lm):
                 os.environ["VF_MUJOCO_MATERIALS_DIR"] = _lm
-        self._r = _get_native().WarpRenderer(config)
+        self._r = native.WarpRenderer(config)
         # Capture the camera exposure (EV) so the layered compositor can apply the
         # SAME deterministic FILMIC+exposure tonemap Filament's post-processing
         # applies in the render_batch path (the layered OBJECTS pass runs with
