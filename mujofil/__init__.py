@@ -18,12 +18,89 @@ try:  # single source of truth = the installed wheel's metadata (pyproject versi
     from importlib.metadata import version as _pkg_version
     __version__ = _pkg_version("mujofil")
 except Exception:  # editable/source checkout without metadata
-    __version__ = "0.2.4"
+    __version__ = "0.2.5"
+
+# Public API surface. Keeps `from mujofil import *` and `dir(mujofil)` clean of
+# module-internal names (os, sys, atexit, weakref, helpers). ``RendererConfig``
+# is provided lazily via ``__getattr__`` (PEP 562) but is part of the public API.
+__all__ = [
+    "WarpRenderer",
+    "ParallelScene",
+    "make_config",
+    "RendererConfig",
+    "QUALITY_PRESETS",
+    "__version__",
+]
 
 # Live renderers, closed deterministically at interpreter exit so the native
 # Filament/CUDA teardown runs while the interpreter is healthy -- not during the
 # unordered GC at shutdown (which can double-free and abort the process).
 _LIVE_WARP_RENDERERS: "weakref.WeakSet" = weakref.WeakSet()
+
+
+# Substrings of the benign native log lines Filament prints to STDOUT at startup
+# (its FEngine banner + the harmless core-profile GL error probe). MUJOFIL_QUIET=1
+# drops exactly these and passes all other output through unchanged.
+_FILAMENT_NOISE = (
+    "FEngine",
+    "Ignoring pending GL error",
+    "CircularBuffer",
+    "Backend feature level",
+    "Vulkan device driver",
+    "Selected physical device",
+)
+
+
+def _apply_quiet_if_requested() -> None:
+    """Drop Filament's chatty startup banner (and the benign ``Ignoring pending
+    GL error 0x500`` line) when ``MUJOFIL_QUIET=1``. Filament logs to STDOUT from
+    its own backend thread, so a scoped redirect can't catch it and a blanket
+    redirect would also swallow the user's own output. Instead route fd 1 through
+    a pipe and a daemon thread that filters out ONLY the known-benign native lines
+    and forwards everything else (user prints, real errors) untouched. Off by
+    default; a real Filament failure still surfaces as a Python exception.
+    """
+    global _quiet_applied
+    if _quiet_applied or os.environ.get("MUJOFIL_QUIET") != "1":
+        return
+    _quiet_applied = True
+    try:
+        import threading
+        sys.stdout.flush()
+        real_fd = os.dup(1)                  # the real stdout (terminal/file)
+        r_fd, w_fd = os.pipe()
+        os.dup2(w_fd, 1)                     # fd 1 -> pipe (catches C-level writes)
+        os.close(w_fd)
+        sys.stdout = os.fdopen(1, "w", buffering=1)   # line-buffered user prints
+        real = os.fdopen(real_fd, "w", buffering=1)
+        reader = os.fdopen(r_fd, "r", errors="replace")
+
+        def _pump() -> None:
+            for line in reader:
+                if not any(frag in line for frag in _FILAMENT_NOISE):
+                    real.write(line)
+                    real.flush()
+
+        t = threading.Thread(target=_pump, daemon=True, name="mujofil-logfilter")
+        t.start()
+
+        def _drain() -> None:
+            # At interpreter exit, restore the real stdout onto fd 1 (which closes
+            # the pipe's write end -> the pump thread sees EOF, drains the last
+            # buffered lines, and exits) so no user output is lost.
+            try:
+                sys.stdout.flush()
+                os.dup2(real_fd, 1)
+                t.join(timeout=1.0)
+            except Exception:  # noqa: BLE001
+                pass
+
+        atexit.register(_drain)
+    except Exception:  # noqa: BLE001 - quieting is best-effort, never fatal
+        pass
+
+
+_quiet_applied = False
 
 
 @atexit.register
@@ -120,6 +197,9 @@ _native = None
 def _get_native():
     global _native
     if _native is None:
+        # Optionally silence Filament's native stderr BEFORE loading/initializing
+        # it (MUJOFIL_QUIET=1; off by default).
+        _apply_quiet_if_requested()
         # Import torch BEFORE loading the native (cudart-linked) .so. On a
         # torch/driver CUDA mismatch, torch's lazy CUDA probe
         # (torch.cuda.is_available()) SEGFAULTS if torch's C extension is first
@@ -212,6 +292,10 @@ def __getattr__(name):  # PEP 562: lazy module attribute
     if name == "RendererConfig":
         return _get_native().RendererConfig
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__():  # PEP 562: keep `dir(mujofil)` to the public API
+    return list(__all__)
 
 
 def make_config(

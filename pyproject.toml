@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "mujofil"
-version = "0.2.4"
+version = "0.2.5"
 description = "Photoreal Filament PBR rendering for GPU-resident MuJoCo, zero-copy to PyTorch"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -29,9 +29,13 @@ dependencies = [
     "mujoco>=3.9,<3.10",
     "mujoco-warp>=3.9,<3.10",
     "warp-lang",
-    # numpy<2: the native module is built against the NumPy 1.x C-ABI; NumPy 2.x
-    # breaks it at runtime. Pin until the native modules are rebuilt for 2.x.
-    "numpy<2",
+    # numpy is used only at the Python level (np.asarray / point transforms); the
+    # native modules do NOT use the NumPy C-API (no PyArray/import_array), so
+    # there is no 1.x-ABI constraint. NumPy 2.x is fully supported and validated
+    # end-to-end. Leave the upper bound OFF so cp312/cp313 get a prebuilt wheel
+    # (numpy 1.26.x has no cp313 wheel and would force a from-source build that
+    # needs a compiler + meson/ninja).
+    "numpy>=1.24",
     # torch is a HARD dependency, not optional: mujofil returns rendered frames
     # as zero-copy torch.cuda tensors, so it cannot do anything useful without
     # PyTorch. The default PyPI build covers Ampere/Ada/Hopper; Blackwell (5090,
@@ -50,9 +54,10 @@ examples = ["pillow"]
 # deps, so kept optional -- only with `pip install "mujofil[usd]"`.
 # Self-pin to this exact version so the resolver can't backtrack to an older
 # mujofil that lacks the [usd] extra.
-usd = ["mujofil==0.2.4", "usd-core>=23.0", "trimesh>=4.0", "scipy>=1.7", "coacd>=1.0", "pillow", "numpy<2"]
+usd = ["mujofil==0.2.5", "usd-core>=23.0", "trimesh>=4.0", "scipy>=1.7", "coacd>=1.0", "pillow", "numpy>=1.24"]
 
 [project.scripts]
+mujofil-doctor = "mujofil.doctor:main"
 mujofil-usd-to-assets = "mujofil.tools.usd_to_assets:main"
 mujofil-glb-to-collision = "mujofil.tools.glb_to_collision:main"
 

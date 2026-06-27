@@ -257,6 +257,23 @@ GL is the default and the universal fallback: if the optional Vulkan backend is
 requested but cannot load or initialize, mujofil falls back to the headless GL
 backend with a warning rather than failing.
 
+### Diagnostics & quiet mode
+
+Run the bundled diagnostic to check your GPU/driver/torch/EGL setup and confirm
+the renderer can actually initialize on both backends:
+
+```bash
+mujofil-doctor
+```
+
+Filament prints a short startup banner (and a benign `Ignoring pending GL error
+0x500` on some drivers) to stdout. To silence that native log noise while keeping
+your own output, set `MUJOFIL_QUIET=1`:
+
+```bash
+MUJOFIL_QUIET=1 python your_script.py
+```
+
 ### Building from source
 
 Most users never need this; `pip install mujofil` ships prebuilt wheels that
