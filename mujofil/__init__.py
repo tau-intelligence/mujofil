@@ -18,7 +18,7 @@ try:  # single source of truth = the installed wheel's metadata (pyproject versi
     from importlib.metadata import version as _pkg_version
     __version__ = _pkg_version("mujofil")
 except Exception:  # editable/source checkout without metadata
-    __version__ = "0.2.1"
+    __version__ = "0.2.2"
 
 # Live renderers, closed deterministically at interpreter exit so the native
 # Filament/CUDA teardown runs while the interpreter is healthy -- not during the
@@ -64,38 +64,47 @@ if "VF_MUJOCO_MATERIALS_DIR" not in os.environ:
             pass
 
 def _load_native(backend: str | None = None):
-    """Select the native backend: 'gl' (default, OpenGL single-sync) or 'vulkan'.
+    """Select the native backend: 'gl' (default) or 'vulkan'.
 
-    The GL backend renders N worlds into N GL textures with a single flushAndWait
-    (true single-sync) and exports them to CUDA via GL interop. It is the fastest
-    path and is fully **headless** (surfaceless EGL — no X server required). The
-    Vulkan backend uses a shared device + exportable swapchain and is also
-    headless. Override with MUJOFIL_BACKEND=gl|vulkan.
+    The **headless OpenGL backend is the default and the universal fallback**. It
+    renders N worlds into N GL textures with a single flushAndWait and exports
+    them to CUDA via GL interop, fully headless (surfaceless EGL — no X server
+    required). It is the fastest and most-tested path.
 
-    Default is 'gl'. If 'gl' is requested implicitly (no explicit override) but the
-    GL module isn't built / can't initialize, we fall back to Vulkan.
+    The Vulkan backend ('vulkan'/'vk') is optional/experimental. If it is
+    requested but cannot be loaded or initialised on this machine, mujofil falls
+    back to the headless OpenGL backend and emits a clear warning. Override with
+    MUJOFIL_BACKEND=gl|vulkan.
     """
     # MUJOFIL_BACKEND is the current name; MUJOFIL_WARP_BACKEND is still honoured
     # for backward compatibility with code written against the 0.1.x package.
     env = os.environ.get("MUJOFIL_BACKEND") or os.environ.get("MUJOFIL_WARP_BACKEND")
-    explicit = backend is not None or env is not None
     backend = (backend or env or "gl").lower()
 
-    if backend in ("vulkan", "vk"):
-        import _mujofil_warp as _vk  # noqa: E402
-        return _vk
+    def _load_gl():
+        import _mujofil_warp_gl as _gl  # noqa: E402  (headless EGL — the default)
+        return _gl
 
-    # GL path (default), headless via EGL. Fall back to Vulkan only when GL wasn't
-    # explicitly asked for and its module is missing/unimportable.
     if backend in ("gl", "opengl"):
+        return _load_gl()
+
+    if backend in ("vulkan", "vk"):
         try:
-            import _mujofil_warp_gl as _gl  # noqa: E402
-            return _gl
-        except Exception:
-            if explicit:
-                raise
             import _mujofil_warp as _vk  # noqa: E402
             return _vk
+        except Exception as exc:
+            # Vulkan is optional/experimental; the headless OpenGL backend is the
+            # universal fallback. Degrade gracefully with a clear message rather
+            # than crashing on an import/init error.
+            import warnings
+            warnings.warn(
+                "MUJOFIL_BACKEND=vulkan could not be loaded "
+                f"({type(exc).__name__}: {exc}); falling back to the headless "
+                "OpenGL backend (the default).",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return _load_gl()
 
     raise ValueError(f"unknown MUJOFIL_BACKEND={backend!r} (use 'gl' or 'vulkan')")
 

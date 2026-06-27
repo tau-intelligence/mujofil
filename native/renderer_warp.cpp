@@ -449,11 +449,72 @@ int Renderer::cuda_device() const { return vk_->cudaDevice; }
 bool Renderer::render_readback_async(uint8_t*) { return false; }  // unused on zero-copy path
 void Renderer::finish() { if (engine_) engine_->flushAndWait(); }
 
+// --- LAYERED parallel-batch path: GL-only ----------------------------------
+// The forked-Filament gl_Layer array-render-target path is implemented only in
+// the OpenGL backend (renderer_gl.cpp); it relies on GL array textures +
+// GL<->CUDA graphics-resource interop. The Vulkan backend uses the per-frame
+// batch path instead (begin_batch / render_frame_no_sync / finish_batch_to_cuda),
+// so layered_ stays false and render_module never calls these at runtime. They
+// exist only so the module links; calling one is a programmer error.
+[[noreturn]] static void _layered_unsupported(const char* fn) {
+    throw std::runtime_error(
+        std::string("mujofil: the layered render path (") + fn +
+        ") is only available on the OpenGL backend; the Vulkan backend uses the "
+        "per-frame batch path. Use MUJOFIL_BACKEND=gl for layered rendering.");
+}
+
+filament::RenderTarget* Renderer::layered_render_target() const { _layered_unsupported("layered_render_target"); }
+uint32_t Renderer::layered_max_per_pass() const { _layered_unsupported("layered_max_per_pass"); }
+void Renderer::render_layered_backdrop() { _layered_unsupported("render_layered_backdrop"); }
+void Renderer::render_layered_objects(uint32_t, uint32_t) { _layered_unsupported("render_layered_objects"); }
+void* Renderer::render_layered_to_cuda() { _layered_unsupported("render_layered_to_cuda"); }
+void* Renderer::layered_backdrop_ptr() const { _layered_unsupported("layered_backdrop_ptr"); }
+void* Renderer::layered_output_ptr() const { _layered_unsupported("layered_output_ptr"); }
+
 void Renderer::destroy() {
+    if (!vk_) return;
     auto& v = *vk_;
+
+    // Drain any in-flight GPU work before tearing anything down.
+    if (engine_) engine_->flushAndWait();
+    if (v.device) vkDeviceWaitIdle(v.device);
+
+    // Release the CUDA view of the exported Vulkan memory FIRST (cudaDptr aliases
+    // v.expMem through an imported fd), before freeing the Vulkan buffer/memory.
     if (v.cudaDptr) { cudaFree(v.cudaDptr); v.cudaDptr = nullptr; }
     if (v.cudaExt) { cudaDestroyExternalMemory(v.cudaExt); v.cudaExt = nullptr; }
-    if (engine_) { Engine::destroy(&engine_); engine_ = nullptr; }
+
+    // Destroy every Filament object created from the engine BEFORE the engine
+    // itself. Destroying the engine while its View/Scene/SwapChain (which back the
+    // exportable swapchain images) are still alive is undefined; mirror the GL
+    // backend's ordered shutdown.
+    if (engine_) {
+        if (color_grading_) { engine_->destroy(color_grading_); color_grading_ = nullptr; }
+        if (view_)      { engine_->destroy(view_);      view_ = nullptr; }
+        if (scene_)     { engine_->destroy(scene_);     scene_ = nullptr; }
+        if (renderer_)  { engine_->destroy(renderer_);  renderer_ = nullptr; }
+        if (swapchain_) { engine_->destroy(swapchain_); swapchain_ = nullptr; }
+        if (camera_entity_) { engine_->destroyCameraComponent(camera_entity_); camera_ = nullptr; }
+        Engine::destroy(&engine_);
+        engine_ = nullptr;
+    }
+
+    // The engine is gone; now free the Vulkan resources WE own. Filament shared
+    // our VkInstance/VkDevice (sharedContext) and never destroys them, so leaving
+    // them dangling makes the Vulkan driver crash in its own teardown at process
+    // exit. Free buffer+memory, the command pool (frees v.cmd with it), then the
+    // device, then the instance.
+    if (v.device) {
+        if (v.expBuf) { vkDestroyBuffer(v.device, v.expBuf, nullptr); v.expBuf = VK_NULL_HANDLE; }
+        if (v.expMem) { vkFreeMemory(v.device, v.expMem, nullptr); v.expMem = VK_NULL_HANDLE; }
+        v.cmd = VK_NULL_HANDLE;  // owned by the pool, freed with it
+        if (v.pool) { vkDestroyCommandPool(v.device, v.pool, nullptr); v.pool = VK_NULL_HANDLE; }
+        vkDestroyDevice(v.device, nullptr);
+        v.device = VK_NULL_HANDLE;
+    }
+    if (v.instance) { vkDestroyInstance(v.instance, nullptr); v.instance = VK_NULL_HANDLE; }
+    v.expBytes = 0;
+
     initialized_ = false;
 }
 
