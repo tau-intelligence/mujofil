@@ -227,3 +227,11 @@ file(GLOB PREBUILT_MATERIALS_LAYERED "${CMAKE_SOURCE_DIR}/mujofil/materials_laye
 if(PREBUILT_MATERIALS_LAYERED)
     install(FILES ${PREBUILT_MATERIALS_LAYERED} DESTINATION mujofil/materials_layered)
 endif()
+
+# Bundled default IBL (studio HDR, prefiltered to KTX): used for ambient lighting
+# and PBR specular reflections so a bare GLB/USD environment looks photoreal
+# out of the box (auto_ibl). Loaded by mujofil/__init__.py from this install dir.
+file(GLOB BUNDLED_IBL "${CMAKE_SOURCE_DIR}/mujofil/assets/ibl/*.ktx")
+if(BUNDLED_IBL)
+    install(FILES ${BUNDLED_IBL} DESTINATION mujofil/assets/ibl)
+endif()

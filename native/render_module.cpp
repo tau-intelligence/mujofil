@@ -111,7 +111,9 @@ public:
                                       bytes(mr_rgba), mr_w, mr_h,
                                       bytes(emissive_rgba), emissive_w, emissive_h);
     }
-    void load_ibl(const std::string& ibl, const std::string& sky) { bridge_->load_ibl(ibl, sky); }
+    void load_ibl(const std::string& ibl, const std::string& sky, bool with_skybox) {
+        bridge_->load_ibl(ibl, sky, with_skybox);
+    }
     void set_ambient_intensity(float i) { bridge_->set_ambient_intensity(i); }
     void clear_dynamic_lights() { bridge_->clear_dynamic_lights(); }
     void add_directional_light(float dx, float dy, float dz, float r, float g, float b,
@@ -304,7 +306,8 @@ PYBIND11_MODULE(MUJOFIL_WARP_MODULE, m) {
         .def("load_glb", &WarpRenderer::load_glb)
         .def("load_glb_xform", &WarpRenderer::load_glb_xform)
         .def("add_layered_env_mesh", &WarpRenderer::add_layered_env_mesh)
-        .def("load_ibl", &WarpRenderer::load_ibl)
+        .def("load_ibl", &WarpRenderer::load_ibl,
+             py::arg("ibl"), py::arg("sky"), py::arg("with_skybox") = false)
         .def("set_ambient_intensity", &WarpRenderer::set_ambient_intensity)
         .def("clear_dynamic_lights", &WarpRenderer::clear_dynamic_lights)
         .def("add_directional_light", &WarpRenderer::add_directional_light,

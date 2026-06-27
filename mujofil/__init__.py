@@ -18,7 +18,7 @@ try:  # single source of truth = the installed wheel's metadata (pyproject versi
     from importlib.metadata import version as _pkg_version
     __version__ = _pkg_version("mujofil")
 except Exception:  # editable/source checkout without metadata
-    __version__ = "0.2.5"
+    __version__ = "0.2.6"
 
 # Public API surface. Keeps `from mujofil import *` and `dir(mujofil)` clean of
 # module-internal names (os, sys, atexit, weakref, helpers). ``RendererConfig``
@@ -117,6 +117,19 @@ def _close_all_warp_renderers() -> None:
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
+
+
+def _default_ibl_paths():
+    """Return ``(ibl_ktx, skybox_ktx)`` for the studio HDR bundled with the
+    wheel, or ``(None, None)`` if it isn't present (e.g. a dev checkout that
+    hasn't copied the assets in)."""
+    d = os.path.join(_HERE, "assets", "ibl")
+    ibl = os.path.join(d, "studio_ibl_ibl.ktx")
+    sky = os.path.join(d, "studio_ibl_skybox.ktx")
+    if os.path.exists(ibl) and os.path.exists(sky):
+        return ibl, sky
+    return None, None
+
 
 # Auto-exposure target for the layered tone-map path: the 90th-percentile LINEAR
 # luminance of the lit pixels is scaled to this value before the FILMIC curve, so
@@ -440,13 +453,16 @@ class WarpRenderer:
     """
 
     def __init__(self, config: "RendererConfig | None" = None,
-                 *, preset: str | None = None, **toggles):
+                 *, preset: str | None = None, auto_ibl: bool = True,
+                 ibl_intensity: float = 30000.0, **toggles):
         # Clear, actionable error (not a raw native abort/segfault) if torch/NVIDIA
         # are missing. Run this BEFORE make_config(), which loads the native
         # cudart-linked module: importing torch *after* that module makes torch's
         # CUDA probe segfault on a driver/runtime mismatch, defeating the whole
         # point of the preflight (a clean message instead of a crash).
         _preflight_check()
+        self._auto_ibl = bool(auto_ibl)
+        self._ibl_intensity = float(ibl_intensity)
         if config is None:
             kw = dict(QUALITY_PRESETS[preset]) if preset else {}
             kw.update(toggles)
@@ -504,6 +520,15 @@ class WarpRenderer:
         # True once a GLB environment is ingested into the layered objects pass
         # (load_glb_layered) -> the layered compositor tonemaps it deterministically.
         self._has_layered_env = False
+        # Auto-load the bundled studio IBL so a bare GLB/USD environment gets soft,
+        # balanced ambient + PBR specular reflections out of the box (instead of
+        # the harsh, blown-out look of a single manual directional light). Costs
+        # ~4% throughput; pass auto_ibl=False to disable. The IBL must be (re)loaded
+        # AFTER load_model -- load_model resets the scene lighting -- so this is
+        # applied in load_model(), not here. Not used by the layered path (it has
+        # its own tone-mapping compositor).
+        self._pending_auto_ibl = (self._auto_ibl and
+                                  not getattr(config, "layered", False))
         _LIVE_WARP_RENDERERS.add(self)
 
     def close(self) -> None:
@@ -522,6 +547,15 @@ class WarpRenderer:
     # --- scene ---
     def load_model(self, model):
         self._r.load_model(_addr(model))
+        # load_model resets the scene lighting (default sun/fill or the model's
+        # own <light>s). Re-apply the bundled studio IBL on top so PBR materials
+        # get balanced ambient + specular reflections. Done once (the flag clears).
+        if getattr(self, "_pending_auto_ibl", False):
+            self._pending_auto_ibl = False
+            try:
+                self.load_default_ibl(with_skybox=False, intensity=self._ibl_intensity)
+            except Exception:  # noqa: BLE001 - missing/old IBL must never be fatal
+                pass
 
     def load_glb(self, path: str):
         self._r.load_glb(path)
@@ -537,6 +571,40 @@ class WarpRenderer:
         if len(xs) != 16:
             raise ValueError("xform16 must have 16 elements (column-major 4x4)")
         self._r.load_glb_xform(path, xs)
+
+    def load_usd(self, usd_path: str, *, name: str = None, cache_dir: str = None,
+                 xform16=None, return_collision: bool = False, **convert_kw):
+        """Convert a USD scene to a visual GLB (+ collision MJCF) and load the GLB.
+
+        One-call USD support: USD is a *visual* environment source, so this bakes
+        it once to a GLB (via the ``mujofil[usd]`` tooling) and loads that GLB as
+        the visible backdrop. The bake is CACHED by the USD's mtime + options, so
+        repeat calls are instant and only re-convert when the USD changes.
+
+        The converter also emits an aligned MuJoCo collision MJCF (floor + walls +
+        props) next to the GLB; pass ``return_collision=True`` to get its path so
+        you can ``mujoco.MjModel.from_xml_path`` it for physics. Forwards extra
+        keywords (e.g. ``floor_z=0``, ``decompose=True``) to the converter.
+
+        Requires the ``[usd]`` extra: ``pip install "mujofil[usd]"``.
+
+        Returns the GLB path, or ``(glb_path, collision_xml_path)`` if
+        ``return_collision=True``.
+        """
+        try:
+            from .tools.usd_to_assets import ensure_usd_assets
+        except Exception as exc:  # noqa: BLE001
+            raise ImportError(
+                "load_usd needs the USD tooling. Install it with "
+                "`pip install \"mujofil[usd]\"` (adds usd-core, trimesh, etc.)."
+            ) from exc
+        glb_path, xml_path = ensure_usd_assets(
+            usd_path, name=name, out_dir=cache_dir, **convert_kw)
+        if xform16 is not None:
+            self.load_glb_xform(glb_path, xform16)
+        else:
+            self._r.load_glb(glb_path)
+        return (glb_path, xml_path) if return_collision else glb_path
 
     def load_glb_layered(self, path: str, xform16=None, max_tex: int = 1024):
         """Ingest a GLB ENVIRONMENT into the INSTANCED LAYERED path so it works
@@ -722,8 +790,33 @@ class WarpRenderer:
             self._has_layered_env = True
         return n_added
 
-    def load_ibl(self, ibl_ktx: str, skybox_ktx: str):
-        self._r.load_ibl(ibl_ktx, skybox_ktx)
+    def load_ibl(self, ibl_ktx: str, skybox_ktx: str, with_skybox: bool = False):
+        """Load an image-based light (a prefiltered HDR environment) for ambient
+        lighting and PBR specular reflections.
+
+        ``with_skybox=False`` (the default) uses the HDR only for lighting and
+        keeps it INVISIBLE, so a loaded GLB/USD environment stays the visible
+        backdrop (right for interiors like a warehouse). Set ``with_skybox=True``
+        to also show the HDR as the visible sky (for open/outdoor scenes).
+        """
+        self._r.load_ibl(ibl_ktx, skybox_ktx, with_skybox)
+
+    def load_default_ibl(self, with_skybox: bool = False,
+                         intensity: float | None = None):
+        """Load the studio HDR bundled with mujofil (no asset files needed).
+
+        Gives a bare GLB/USD environment soft, balanced ambient light plus proper
+        PBR specular reflections out of the box, instead of the harsh, blown-out
+        look of a single manual directional light. Returns True if the bundled IBL
+        was found and loaded, False otherwise.
+        """
+        ibl, sky = _default_ibl_paths()
+        if not ibl or not sky:
+            return False
+        self._r.load_ibl(ibl, sky, with_skybox)
+        if intensity is not None:
+            self._r.set_ambient_intensity(float(intensity))
+        return True
 
     def set_ambient_intensity(self, intensity: float):
         self._r.set_ambient_intensity(intensity)

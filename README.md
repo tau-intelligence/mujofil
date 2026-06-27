@@ -46,6 +46,12 @@ with no CPU round-trip** for the pixels.
   transform array crosses to the host. Pixels never leave the GPU.
 - **Photoreal.** Full PBR metalness/roughness, IBL, soft shadows, SSAO, MSAA,
   filmic tone mapping. Renders complete GLB environments MJWarp/MuJoCo can't.
+- **Photoreal out of the box.** A studio HDR (image-based light) is bundled and
+  loaded automatically, so bare GLB/USD environments get balanced ambient light
+  and PBR reflections with no lighting setup (~a few percent cost; turn it off
+  with `auto_ibl=False`).
+- **USD/GLB environments in one call.** `load_usd()` converts a USD scene to a
+  visual GLB (cached) and loads it; `load_glb()` loads a GLB directly.
 - **Two backends.** An OpenGL single-sync path and a Vulkan shared-device path,
   selectable at runtime.
 
@@ -163,6 +169,49 @@ r = WarpRenderer(config=cfg)
 **Presets:** `high` (photoreal, default), `medium` (high-quality SSAO, no cone
 tracing), `fast` (SSAO off, ~2x), `ultra` (8x MSAA + bloom), `raw` (no AO/shadows/AA,
 ~3x). `eval` is an alias of `high`; `train` is an alias of `fast` tuned for vision-RL.
+
+## Environments & lighting
+
+Drop your simulation objects into a photoreal scene. GLB and USD are *visual*
+environment sources; load one as the backdrop and your MJCF freejoint bodies
+(which MuJoCo Warp simulates) drop into it.
+
+```python
+r = scene.renderer          # a ParallelScene exposes its WarpRenderer
+
+r.load_glb("warehouse.glb")                 # a GLB backdrop
+r.load_usd("Warehouse01.usd", floor_z=0)    # or a USD: converted + cached, then loaded
+```
+
+`load_usd()` converts the USD to a visual GLB **once** (via the `mujofil[usd]`
+tooling) and caches it by file mtime, so repeat calls are instant. It also emits
+an aligned MuJoCo collision MJCF next to the GLB; pass `return_collision=True` to
+get its path and load it for physics. `floor_z=0` pins the ground at z=0 for
+multi-level scenes. Needs the extra: `pip install "mujofil[usd]"`.
+
+**Lighting.** A bundled studio HDR (image-based light) is loaded automatically
+(`auto_ibl=True`, the default), giving balanced ambient light plus PBR specular
+reflections, so metals and floors look photoreal without any manual lights. It
+costs only a few percent throughput.
+
+```python
+# default: auto IBL on, no setup needed
+scene = mujofil.ParallelScene("scene.xml", num_worlds=32)
+
+# turn it off for maximum throughput (e.g. flat-shaded RL where looks don't matter)
+scene = mujofil.ParallelScene("scene.xml", num_worlds=32, auto_ibl=False)
+
+# or drive lighting yourself
+r.load_default_ibl(with_skybox=False)       # the bundled studio HDR
+r.load_ibl("my_ibl.ktx", "my_skybox.ktx", with_skybox=True)   # your own HDR + visible sky
+r.add_directional_light(-0.3, 0.5, -0.8, 1, 1, 1, 20000, cast_shadows=True)
+```
+
+Prefer IBL over a single bright directional light for interiors: a lone harsh
+directional tends to blow out the floor and exaggerate specular aliasing, while
+the prefiltered IBL gives soft, even, physically-based lighting. `with_skybox`
+defaults to `False` so the HDR lights the scene but stays invisible (your loaded
+GLB/USD remains the visible backdrop); set it `True` for open/outdoor scenes.
 
 ## Backends
 
