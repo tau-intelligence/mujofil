@@ -170,8 +170,8 @@ pre code{color:var(--text)}
     <h1>Photoreal worlds for<br/><span class="o">vision-based</span> robot learning.</h1>
     <p class="lede"><b>MuJoFil</b> turns a GPU-resident physics simulation into photoreal training observations, using a parallel rasterization renderer forked from Google Filament. Drop in any environment and train your robot's policy inside it.</p>
     <div class="btn-row">
-      <a class="btn btn-primary" href="#start">pip install mujofil-warp</a>
-      <a class="btn btn-ghost" href="https://github.com/tau-intelligence/mujofil-warp" target="_blank" rel="noopener">View on GitHub</a>
+      <a class="btn btn-primary" href="#start">pip install mujofil</a>
+      <a class="btn btn-ghost" href="https://github.com/tau-intelligence/mujofil" target="_blank" rel="noopener">View on GitHub</a>
     </div>
     <nav class="hero-meta hero-nav" aria-label="Sections">
       <a href="#what">What it is</a>
@@ -328,16 +328,16 @@ pre code{color:var(--text)}
     <div class="section-title reveal">
       <span class="kicker">Get started</span>
       <h2>One install, one import.</h2>
-      <p>Your code imports only <code>mujofil_warp</code>. The physics and the renderer are driven for you.</p>
+      <p>Your code imports only <code>mujofil</code>. The physics and the renderer are driven for you.</p>
     </div>
     <div class="two" style="align-items:start">
       <div class="reveal">
         <pre><code><span class="tok-c"># one self-contained wheel, an NVIDIA GPU is all you need</span>
-$ pip install mujofil-warp</code></pre>
-        <pre style="margin-top:14px"><code><span class="tok-k">import</span> mujofil_warp
+$ pip install mujofil</code></pre>
+        <pre style="margin-top:14px"><code><span class="tok-k">import</span> mujofil
 
 <span class="tok-c"># GPU physics plus photoreal rendering, one object</span>
-scene = mujofil_warp.<span class="tok-f">ParallelScene</span>(
+scene = mujofil.<span class="tok-f">ParallelScene</span>(
     <span class="tok-s">"scene.xml"</span>, num_worlds=<span class="tok-s">32</span>,
     width=<span class="tok-s">256</span>, height=<span class="tok-s">256</span>, preset=<span class="tok-s">"high"</span>)
 
@@ -352,8 +352,8 @@ scene = mujofil_warp.<span class="tok-f">ParallelScene</span>(
           <p>The wheel is self-contained: Filament and the CUDA runtime are baked in. The only runtime requirement is an <strong>NVIDIA GPU and driver</strong>. Linux x86-64, Python 3.10 to 3.13.</p>
         </div>
         <div class="btn-row" style="justify-content:flex-start;margin-top:18px">
-          <a class="btn btn-primary" href="https://github.com/tau-intelligence/mujofil-warp" target="_blank" rel="noopener">Docs and source &#8599;</a>
-          <a class="btn btn-ghost" href="https://pypi.org/project/mujofil-warp/" target="_blank" rel="noopener">PyPI &#8599;</a>
+          <a class="btn btn-primary" href="https://github.com/tau-intelligence/mujofil" target="_blank" rel="noopener">Docs and source &#8599;</a>
+          <a class="btn btn-ghost" href="https://pypi.org/project/mujofil/" target="_blank" rel="noopener">PyPI &#8599;</a>
         </div>
       </div>
     </div>
@@ -367,8 +367,8 @@ scene = mujofil_warp.<span class="tok-f">ParallelScene</span>(
       <span>MuJoFil · an open-source project by <a href="https://tau-intelligence.com" target="_blank" rel="noopener">Tau Intelligence</a></span>
     </div>
     <div style="display:flex;gap:18px;flex-wrap:wrap">
-      <a href="https://github.com/tau-intelligence/mujofil-warp" target="_blank" rel="noopener">GitHub</a>
-      <a href="https://pypi.org/project/mujofil-warp/" target="_blank" rel="noopener">PyPI</a>
+      <a href="https://github.com/tau-intelligence/mujofil" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://pypi.org/project/mujofil/" target="_blank" rel="noopener">PyPI</a>
       <a href="https://tau-intelligence.com" target="_blank" rel="noopener">tau-intelligence.com</a>
     </div>
   </div>
